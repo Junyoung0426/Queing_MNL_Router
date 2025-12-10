@@ -1,1 +1,1 @@
-# Queing_MNL_Router
+# MNL_queing_bandit
