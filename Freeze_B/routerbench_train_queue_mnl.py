@@ -1,30 +1,43 @@
-# routerbench_train_queue_mnl.py
+#!/usr/bin/env python3
+# routerbench_train_queue_mnl_B.py
+#
+# 실행 예:
+#   python3 routerbench_train_queue_mnl_B.py \
+#     --data routerbench_0shot.pkl \
+#     --output_dir runs_mnl/exp_B \
+#     --lam_list 50.0
+#
+# pool 고정:
+#   python3 routerbench_train_queue_mnl_B.py \
+#     --data routerbench_0shot.pkl \
+#     --output_dir runs_mnl/exp_B_pool100 \
+#     --lam_list 50.0 \
+#     --job_pool_size 100
 
 import argparse
-import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import joblib
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from sentence_transformers import SentenceTransformer
 
-from mnl_router import MNLRouter, build_X_S_from_context
-from queue_env import queue_env
 from queue_config import QueueConfig
+from mnl_router import MNLRouter
+from queue_env import queue_env
 
 
-# ----------------------------
-# Data Loading & Utilities
-# ----------------------------
-def load_routerbench(path: str):
+def load_routerbench(path: str) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
     df = pd.read_pickle(path)
+
     base = {"sample_id", "prompt", "eval_name", "oracle_model_to_route_to"}
     models = [c for c in df.columns if ("|" not in c) and (c not in base)]
     cost_map = {c.split("|")[0]: c for c in df.columns if c.endswith("|total_cost")}
+
+    subset_cols = models + list(cost_map.values())
+    df = df.dropna(subset=subset_cols).reset_index(drop=True)
     return df, models, cost_map
 
 
@@ -33,411 +46,183 @@ def compute_utilities(
     models: List[str],
     cost_map: Dict[str, str],
     use_cost: bool,
-    lam: float,
+    lam_cost: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    acc, cost, utility(acc - lam*cost 혹은 acc-only) 반환.
-    """
     acc = np.array([float(row[m]) for m in models], dtype=np.float64)
-    costs = np.array(
-        [float(row.get(cost_map.get(m), 0.0)) for m in models],
-        dtype=np.float64,
-    )
-    if use_cost:
-        u = acc - lam * costs
-    else:
-        u = acc.copy()
+    costs = np.array([float(row.get(cost_map.get(m), 0.0)) for m in models], dtype=np.float64)
+    u = acc - lam_cost * costs if use_cost else acc.copy()
     return acc, costs, u
 
 
-# ----------------------------
-# SentenceTransformer Embedder
-# ----------------------------
-class SentenceTransformerEmbedder:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", device=None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+class Embedder:
+    def __init__(self, model_name: str, device: torch.device):
+        self.device = str(device)
         self.model = SentenceTransformer(model_name, device=self.device)
         print(f"[Embedder] SentenceTransformer '{model_name}' on {self.device}")
 
-    def fit_transform(self, texts: List[str]) -> np.ndarray:
-        print(f"[Embedder] Encoding {len(texts)} train prompts...")
-        return self.transform(texts)
-
     def transform(self, texts: List[str]) -> np.ndarray:
-        embs = self.model.encode(
-            texts,
-            convert_to_numpy=True,
-            show_progress_bar=True,
-            device=self.device,
-        )
+        print(f"[Embedder] Encoding {len(texts)} prompts...")
+        embs = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
         return embs.astype(np.float32)
 
 
-# ----------------------------
-# Offline pretraining for B + θ
-# ----------------------------
-def offline_pretrain_router(
+def offline_pretrain_B_supcon(
     router: MNLRouter,
-    X_train: np.ndarray,      # (N_train, d_ctx)
-    util_mat: np.ndarray,     # (N_train, K_models) - 이미 λ 반영된 util
-    args,
-    device: torch.device,
+    X_ctx_train: np.ndarray,       # (N, d_ctx)
+    winner_idx: np.ndarray,        # (N,)
+    config: QueueConfig,
 ):
     """
-    RouterBench train 데이터 전체를 이용해서
-    - B: representation
-    - θ: offline MNL
-    - SupCon: 모델 index 기반 contrastive
-    를 joint 학습한다.
-
-    이후 online 전에 router.freeze_B() + router.reset_for_online() 호출.
+    offline_ratio/epochs/lr_B/supcon_bs 그대로 써서 B만 SupCon으로 학습한다.
+    스킵하더라도 freeze/reset은 항상 수행한다.
     """
-    N_train, K_models = util_mat.shape
+    N = X_ctx_train.shape[0]
 
-    router.unfreeze_B(lr_b=args.offline_lr_B)
+    # 항상 offline 시작 상태로 만든다
+    router.unfreeze_B(lr_b=config.offline_lr_B)
 
-    for epoch in range(args.offline_epochs):
-        perm = np.random.permutation(N_train)
-        total_loss = 0.0
+    if config.offline_ratio <= 0.0 or config.offline_epochs <= 0:
+        print("[Offline] skipped (offline_ratio<=0 or offline_epochs<=0)")
+        router.freeze_B()
+        router.reset_for_online()
+        return
 
-        for idx in perm:
-            x_ctx = X_train[idx]
-            util_row = util_mat[idx]
+    n_off = max(2, int(N * config.offline_ratio))
+    rng = np.random.RandomState(config.seed)
+    off_idx = rng.choice(N, size=n_off, replace=False)
 
-            # 전체 모델을 assortment로 사용
-            S_all = list(range(K_models))
-            X_S = build_X_S_from_context(x_ctx, S_all, K_models, device)
+    X_off = torch.from_numpy(X_ctx_train[off_idx]).float().to(router.device)
+    y_off = torch.from_numpy(winner_idx[off_idx]).long().to(router.device)
 
-            # winner = argmax util
-            winner = int(util_row.argmax())
-            y_vec = torch.zeros(len(S_all), device=device)
-            y_vec[winner] = 1.0
+    bs = int(config.supcon_bs)
+    replace = (n_off < bs)
 
-            # SupCon buffer에 winner feature 추가
-            x_win = build_X_S_from_context(x_ctx, [winner], K_models, device)[0]
-            router.add_to_buffer(x_win, winner)
+    print(
+        f"[Offline] SupCon pretrain: N_off={n_off}, bs={bs}, "
+        f"epochs={config.offline_epochs}, b_type={config.b_type}"
+    )
 
-            loss_mnl, loss_sc = router.update(
-                X_S,
-                y_vec,
-                batch_supcon_size=args.supcon_bs,
-                lambda_sc=args.offline_supcon_weight,
-            )
-            total_loss += loss_mnl
+    for ep in range(1, int(config.offline_epochs) + 1):
+        b_idx_np = rng.choice(n_off, size=bs, replace=replace)
+        b_idx = torch.as_tensor(b_idx_np, device=router.device, dtype=torch.long)
 
-        avg_mnl = total_loss / N_train
-        print(
-            f"[Offline] epoch {epoch+1}/{args.offline_epochs} "
-            f"avg MNL loss={avg_mnl:.4f}"
-        )
+        loss_sc = router.supcon_step(X_off[b_idx], y_off[b_idx], lambda_sc=1.0)
 
-    print("[Offline] Pretraining finished. Freezing B and resetting for online...")
+        if (ep % 50 == 0) or (ep == 1) or (ep == config.offline_epochs):
+            print(f"[Offline] epoch={ep:4d} | supcon_loss={loss_sc:.4f}")
+
     router.freeze_B()
     router.reset_for_online()
 
 
-# ----------------------------
-# Train one queue-MNL router at a given lambda
-# ----------------------------
-def train_single_queue_router(
-    args,
-    lam_cost_for_training: float,
-    X_train: np.ndarray,
-    df_train: pd.DataFrame,
-    models: List[str],
-    cost_map: Dict[str, str],
-    device: torch.device,
-) -> Tuple[MNLRouter, float, float, List[float], List[float]]:
-    """
-    λ 하나에 대해:
-      1) offline pretrain (B + θ + SupCon)
-      2) B freeze + θ/V_inv reset
-      3) queue 환경에서 online bandit 학습
-
-    return:
-      - router
-      - avg_regret         (Regret_T / T)
-      - Q_regret_T         (최종 queue-length regret Q(T) - Q*(T))
-      - regret_history     (step별 cum_regret)
-      - Q_regret_history   (step별 |Q(t) - Q*(t)|)
-    """
-    N_train = len(df_train)
-    K_models = len(models)
-
-    # acc_mat, util_mat 구성
-    acc_mat = np.zeros((N_train, K_models), dtype=np.float64)
-    util_mat = np.zeros((N_train, K_models), dtype=np.float64)
-
-    print(f"[Lambda={lam_cost_for_training}] Building acc_mat/util_mat...")
-    for i, (_, row) in enumerate(df_train.iterrows()):
-        acc, costs, u = compute_utilities(
-            row,
-            models=models,
-            cost_map=cost_map,
-            use_cost=args.use_cost,
-            lam=lam_cost_for_training,
-        )
-        acc_mat[i] = acc
-        util_mat[i] = u
-
-    d_ctx = X_train.shape[1]
-    d_in = d_ctx + K_models
-
-    # 1) offline pretraining router 생성 및 학습
-    router = MNLRouter(
-        d_in=d_in,
-        d_proj=args.d_proj,
-        lam_ridge=args.reg_lambda,
-        supcon_temp=args.supcon_temp,
-        device=device.type,
-    ).to(device)
-
-    print(f"[Lambda={lam_cost_for_training}] Offline pretraining start...")
-    offline_pretrain_router(
-        router=router,
-        X_train=X_train,
-        util_mat=util_mat,
-        args=args,
-        device=device,
-    )
-
-    # 2) QueueConfig (online bandit; SupCon은 보통 끔)
-    config = QueueConfig(
-        d_proj=args.d_proj,
-        reg_lambda=args.reg_lambda,
-        supcon_temp=args.supcon_temp,
-        supcon_bs=args.supcon_bs,
-        supcon_weight=0.0,        # online에선 SupCon 끔 (B freeze 상태)
-        assort_K=args.assort_K,
-        kappa=1.0,
-        lambda0=None,
-        c0=args.c0,
-        arrival_rate=args.arrival_rate,
-        max_steps=args.max_steps,
-        log_every=args.log_every,
-        seed=args.seed,
-        device=device.type,
-    )
-
-    # 3) queue 환경에서 online 학습 (pretrained+frozen B 사용)
-    print(f"[Lambda={lam_cost_for_training}] Training in queue env (online)...")
-    router, avg_reg, Q_reg_T, reg_hist, Q_reg_hist = queue_env(
-        X_ctx=X_train,
-        acc_mat=acc_mat,
-        util_mat=util_mat,
-        config=config,
-        router=router,
-    )
-
-    return router, avg_reg, Q_reg_T, reg_hist, Q_reg_hist
+def parse_args():
+    ap = argparse.ArgumentParser(description="B version: offline SupCon(B-only) + online queue(theta-only)")
+    ap.add_argument("--data", type=str, required=True)
+    ap.add_argument("--output_dir", type=str, default="./runs_mnl/exp_B")
+    ap.add_argument("--lam_list", type=float, nargs="+", default=None)
+    ap.add_argument("--job_pool_size", type=int, default=None)
+    return ap.parse_args()
 
 
-# ----------------------------
-# Main Training Script
-# ----------------------------
 def main():
     args = parse_args()
+    config = QueueConfig()
+    device = torch.device(config.device)
 
-    output_dir = Path(args.output_dir)
-    models_dir = output_dir / "models"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    models_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[Info] Saving results to: {output_dir}")
+    print("========== QueueConfig ==========")
+    print(config)
+    print("=================================")
 
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Info] Using device: {device}")
+        torch.cuda.manual_seed_all(config.seed)
 
-    # 0) RouterBench 로드
+    print(f"[Info] Loading Data: {args.data} ...")
     df, models, cost_map = load_routerbench(args.data)
-    initial_count = len(df)
-    df.dropna(subset=models, inplace=True)
-    df = df.reset_index(drop=True)
-    print(f"[Info] Loaded {initial_count} rows, {len(df)} remain after drop-NaN.")
     K_models = len(models)
+    print(f"[Info] Total rows after drop-NaN: {len(df)}, #Models={K_models}")
 
-    # 1) Train/Test split
-    print(
-        f"[Info] Split: Train {100*(1-args.test_size):.0f}% / "
-        f"Test {100*args.test_size:.0f}% (stratified by eval_name)"
-    )
-    stratify_col = df["eval_name"] if "eval_name" in df.columns else None
-    if stratify_col is not None:
-        stratify_col = stratify_col.fillna("unknown")
-    df_train, df_test = train_test_split(
-        df,
-        test_size=args.test_size,
-        random_state=args.seed,
-        stratify=stratify_col,
-    )
+    # split
+    df_train, df_test = train_test_split(df, test_size=config.test_size, random_state=config.seed)
+    df_train = df_train.reset_index(drop=True)
+    df_test = df_test.reset_index(drop=True)
+    print(f"[Split] Total={len(df)} | Train={len(df_train)} | Test={len(df_test)}")
 
-    # [SAVE 1] Test set 저장
-    test_set_path = output_dir / "test_set.pkl"
-    df_test.to_pickle(test_set_path)
-    print(f"[Info] Test set saved to: {test_set_path}")
-
-    # 2) SentenceTransformer 임베딩 (train)
-    prompts_train = df_train["prompt"].astype(str).tolist()
-    embedder = SentenceTransformerEmbedder(
-        model_name=args.embedder_model,
-        device=device,
-    )
-    X_train = embedder.fit_transform(prompts_train)
-    d_query = X_train.shape[1]
-    print(f"[Info] d_query (embedding dim) = {d_query}")
-
-    # [SAVE 2] embedder 저장
-    embedder_path = output_dir / "embedder.joblib"
-    joblib.dump(embedder, embedder_path)
-    print(f"[Info] Embedder saved to: {embedder_path}")
-
-    # [SAVE 3] meta 정보 + args 저장
-    with open(output_dir / "train_args.json", "w") as f:
-        json.dump(vars(args), f, indent=4)
-    meta = {
-        "d_query": d_query,
-        "K_models": K_models,
-        "models": models,
-        "cost_map": cost_map,
-    }
-    with open(output_dir / "meta.json", "w") as f:
-        json.dump(meta, f, indent=4)
-
-    # 3) λ 리스트 구성
-    final_summary = []  # (lambda, avg_reg, Q_reg_T)
-
-    if args.use_cost:
-        if args.lam_list is not None and args.lam_list.strip() != "":
-            try:
-                lambda_points_to_train = [
-                    float(x) for x in args.lam_list.split(",") if x.strip() != ""
-                ]
-            except ValueError:
-                raise ValueError(f"Invalid --lam_list format: {args.lam_list}")
-            print(f"[Info] Using cost-aware utility with λ list = {lambda_points_to_train}.")
-        else:
-            lambda_points_to_train = [args.lam_cost]
-            print(f"[Info] Using cost-aware utility with single λ = {args.lam_cost}.")
+    # job_pool_size 적용 (pool support만 줄이고, arrival는 pool에서 with-replacement)
+    if args.job_pool_size is not None:
+        n_pool = int(args.job_pool_size)
+        if not (1 <= n_pool <= len(df_train)):
+            raise ValueError(f"job_pool_size must be in [1,{len(df_train)}], got {n_pool}")
+        df_train = df_train.sample(n=n_pool, random_state=config.seed).reset_index(drop=True)
+        print(f"[Pool] Fixed job pool size = {n_pool}")
     else:
-        print("!! WARNING: --use_cost 안 켜짐. lambda=0.0 하나만 학습 (acc-only).")
-        lambda_points_to_train = [0.0]
+        print("[Pool] Using full train set as job pool")
 
-    # 4) λ별 학습 루프
-    for lam_train in lambda_points_to_train:
-        print(
-            f"\n{'='*60}\n"
-            f"[Lambda={lam_train}] Training start (offline + online)\n"
-            f"{'='*60}"
+    # embed
+    embedder = Embedder(config.embedder_model, device)
+    X_train = embedder.transform(df_train["prompt"].astype(str).tolist())
+    d_ctx = X_train.shape[1]
+    print(f"[Info] d_ctx = {d_ctx}")
+
+    # config 채우기
+    config.d_ctx = d_ctx
+    config.n_models = K_models
+
+    # lambda list
+    if config.use_cost:
+        lambdas = args.lam_list if args.lam_list is not None else [config.lam_cost]
+    else:
+        lambdas = [0.0]
+
+    outdir = Path(args.output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for lam in lambdas:
+        print(f"\n>> Experiment Lambda = {lam}")
+
+        acc_train = np.zeros((len(df_train), K_models), dtype=np.float64)
+        util_train = np.zeros((len(df_train), K_models), dtype=np.float64)
+
+        for i, (_, row) in enumerate(df_train.iterrows()):
+            acc, _, u = compute_utilities(row, models, cost_map, config.use_cost, lam)
+            acc_train[i] = acc
+            util_train[i] = u
+
+        # offline winner label (util 기준)
+        winner_idx = np.argmax(util_train, axis=1).astype(np.int64)
+
+        # router 생성 + offline pretrain
+        lambda_0 = config.lambda0 if config.lambda0 is not None else config.reg_lambda
+        router = MNLRouter(
+            d_ctx=d_ctx,
+            n_models=K_models,
+            d_proj=config.d_proj,
+            lambda_0=lambda_0,
+            supcon_temp=config.supcon_temp,
+            device=config.device,
+            b_type=config.b_type,
+            b_hidden_mult=config.b_hidden_mult,
+            d_model_emb=config.d_model_emb,
+            lr_b=config.offline_lr_B,
+        ).to(device)
+
+        offline_pretrain_B_supcon(router, X_train, winner_idx, config)
+
+        # online queue
+        print("[Online] Starting Queue Bandit Simulation (B)...")
+        router, avg_reg, Q_reg_T, reg_hist, Q_hist = queue_env(
+            X_ctx=X_train,
+            acc_mat=acc_train,
+            util_mat=util_train,
+            config=config,
+            router=router,
         )
 
-        router, avg_reg, Q_reg_T, reg_hist, Q_reg_hist = train_single_queue_router(
-            args,
-            lam_cost_for_training=lam_train,
-            X_train=X_train,
-            df_train=df_train,
-            models=models,
-            cost_map=cost_map,
-            device=device,
-        )
+        pd.DataFrame({"cum_regret": reg_hist}).to_csv(outdir / f"regret_history_lam_{lam:.2f}.csv", index=False)
+        pd.DataFrame({"Q_diff": Q_hist}).to_csv(outdir / f"Qregret_history_lam_{lam:.2f}.csv", index=False)
 
-        final_summary.append((lam_train, avg_reg, Q_reg_T))
-
-        # [SAVE 모델] state_dict 저장
-        model_path = models_dir / f"mnl_router_lam_{lam_train:.2f}.pth"
-        torch.save(router.state_dict(), model_path)
-        print(f"[Lambda={lam_train}] Router weights saved to: {model_path}")
-
-        # [SAVE regret history] standard regret
-        rounds = np.arange(1, len(reg_hist) + 1, dtype=int)
-        reg_df = pd.DataFrame(
-            {
-                "round": rounds,
-                "cum_regret": np.array(reg_hist, dtype=float),
-                "avg_regret": np.array(reg_hist, dtype=float) / rounds,
-            }
-        )
-        reg_path = output_dir / f"regret_history_lam_{lam_train:.2f}.csv"
-        reg_df.to_csv(reg_path, index=False)
-        print(f"[Lambda={lam_train}] Standard regret history saved to: {reg_path}")
-
-        # [SAVE queue-length gap history] |Q(t) - Q*(t)|
-        q_rounds = np.arange(1, len(Q_reg_hist) + 1, dtype=int)
-        q_df = pd.DataFrame(
-            {
-                "step": q_rounds,
-                "Q_diff": np.array(Q_reg_hist, dtype=float),
-            }
-        )
-        q_path = output_dir / f"Qregret_history_lam_{lam_train:.2f}.csv"
-        q_df.to_csv(q_path, index=False)
-        print(f"[Lambda={lam_train}] Queue-length gap history saved to: {q_path}")
-
-    # 5) 최종 summary 저장
-    summary_df = pd.DataFrame(
-        final_summary,
-        columns=["lambda", "final_avg_regret", "final_Q_regret_T"],
-    )
-    summary_path = output_dir / "final_regret_summary.csv"
-    summary_df.to_csv(summary_path, index=False)
-    print(f"\n[Final] Summary saved to: {summary_path}")
-
-    print("\n[Summary] Final Regret vs Lambda")
-    print("-------------------------------------------")
-    print(f"{'Lambda':<10} | {'AvgStdReg':<15} | {'Qreg_T':<15}")
-    print("-------------------------------------------")
-    for lam, r, qr in final_summary:
-        print(f"{lam:<10.2f} | {r:<15.6f} | {qr:<15.6f}")
-
-
-def parse_args():
-    ap = argparse.ArgumentParser(
-        description="Train MNLRouter (offline B) + Queue env (online) on RouterBench (Unknown horizon)"
-    )
-    ap.add_argument("--data", type=str, required=True, help="Path to RouterBench .pkl file")
-    ap.add_argument("--output_dir", type=str, default="./runs_mnl/exp1", help="Directory to save results")
-
-    # Data split
-    ap.add_argument("--test_size", type=float, default=0.3, help="Fraction for test set (0.3 = 30%)")
-
-    # Utility & cost
-    ap.add_argument("--use_cost", action="store_true", help="Use utility = acc - lam * cost")
-    ap.add_argument("--lam_cost", type=float, default=50.0, help="Cost penalty λ for utility (fallback)")
-    ap.add_argument(
-        "--lam_list",
-        type=str,
-        default="0,1,10,50,100,1000",
-        help="Comma-separated list of λ values (e.g. '0,1,10,50,100,1000'). "
-             "If empty string, falls back to lam_cost.",
-    )
-
-    # MNLRouter / queue hyperparams (online)
-    ap.add_argument("--d_proj", type=int, default=128, help="Latent dim d_proj")
-    ap.add_argument("--reg_lambda", type=float, default=1.0, help="Ridge λ for V_inv")
-    ap.add_argument("--supcon_temp", type=float, default=0.07, help="SupCon temperature")
-    ap.add_argument("--supcon_bs", type=int, default=64, help="SupCon batch size")
-    ap.add_argument("--supcon_weight", type=float, default=1.0, help="(Deprecated in online)")
-
-    ap.add_argument("--assort_K", type=int, default=2, help="Assortment size |S_t|")
-    ap.add_argument("--arrival_rate", type=float, default=0.7, help="Job arrival probability")
-    ap.add_argument("--max_steps", type=int, default=100000, help="Max queue simulation steps")
-    ap.add_argument("--log_every", type=int, default=1000, help="Logging interval")
-
-    # Unknown-horizon exploration parameter
-    ap.add_argument("--c0", type=float, default=1.0, help="Exploration coefficient c0 in η(t)")
-
-    # Offline pretraining 하이퍼파라미터
-    ap.add_argument("--offline_epochs", type=int, default=1, help="Offline epochs for B+theta pretraining")
-    ap.add_argument("--offline_supcon_weight", type=float, default=1.0, help="SupCon weight in offline training")
-    ap.add_argument("--offline_lr_B", type=float, default=1e-3, help="Learning rate for B in offline phase")
-
-    # Embedder / logging / seed
-    ap.add_argument("--embedder_model", type=str, default="all-MiniLM-L6-v2", help="SentenceTransformer model name")
-    ap.add_argument("--seed", type=int, default=42, help="Random seed")
-
-    return ap.parse_args()
+        print(f"[Done] Lambda {lam} finished. AvgRegret={avg_reg:.6f}, Q_reg_T={Q_reg_T:.3f}")
 
 
 if __name__ == "__main__":

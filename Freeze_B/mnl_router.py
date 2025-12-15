@@ -9,309 +9,441 @@ import torch.nn.functional as F
 
 class MNLRouter(nn.Module):
     """
-    Shared-theta MNL Router + SupCon + V_inv (Neural Linear-style).
+    Offline:
+      - B만 SupCon으로 학습한다 (theta/V_inv 업데이트 안 한다)
+      - model_emb/model_proj는 기본 freeze
 
-    입력 feature:
-      - x_ctx: (d_ctx,)
-      - model one-hot: (K,)
-      => concat → (d_ctx + K,) = d_in
+    Online:
+      - B, model parts freeze
+      - theta만 0..t full-history MLE(+ridge)를 LBFGS로 minimize 한다
+      - V_inv는 현재 라운드 feature로 Sherman–Morrison 업데이트한다
 
-    구조:
-      B: R^{d_in} -> R^{d_proj}  (offline MNL + SupCon joint gradient로 학습)
-      theta: R^{d_proj}          (online MNL 파라미터)
-      V_inv: R^{d_proj x d_proj} (UCB/TS용 inverse covariance)
+    입력 형식:
+      1) index-format:  x = [x_ctx (d_ctx), model_idx (1)]          => (d_ctx+1)
+      2) onehot-format: x = [x_ctx (d_ctx), onehot(model) (K)]      => (d_ctx+n_models)
+
+    Interaction:
+      z_ctx = B(x_ctx)                     (d_proj)
+      z_model = model_proj(model_emb(idx)) (d_proj)   (default: frozen)
+      z_final = clip_norm(z_ctx * z_model) (d_proj)
+      score = z_final^T theta
     """
 
     def __init__(
         self,
-        d_in: int,
+        d_ctx: int,
+        n_models: int,
         d_proj: int,
-        lam_ridge: float = 1.0,
+        lambda_0: float = 1.0,
         supcon_temp: float = 0.07,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        # B 타입
+        b_type: str = "mlp",          # "linear" or "mlp"
+        b_hidden_mult: int = 2,       # mlp hidden = d_proj * b_hidden_mult
+        # model embedding (고정 사용)
+        d_model_emb: int = 128,
+        # Online LBFGS
+        theta_solver: str = "lbfgs",
+        lbfgs_max_iter: int = 30,
+        lbfgs_history_size: int = 10,
+        lbfgs_line_search: str = "strong_wolfe",
+        hist_init_capacity: int = 2048,
+        # Offline optimizer (B만)
+        lr_b: float = 1e-3,
+        buffer_max_size: int = 5000,
     ):
         super().__init__()
-        self.d_in = d_in
-        self.d_proj = d_proj
+        self.d_ctx = int(d_ctx)
+        self.n_models = int(n_models)
+        self.d_proj = int(d_proj)
         self.device = torch.device(device)
-        self.supcon_temp = supcon_temp
-        self.lam_ridge = lam_ridge
 
-        # Projection B
-        self.B = nn.Linear(d_in, d_proj, bias=False).to(self.device)
+        self.lambda_0 = float(lambda_0)
+        self.supcon_temp = float(supcon_temp)
 
-        # Shared theta (MNL 파라미터)
-        self.theta = nn.Parameter(torch.zeros(d_proj, device=self.device))
+        self.d_final_feature = self.d_proj
+        self.d = self.d_final_feature  # queue_env에서 쓰는 d와 맞춘다
 
-        # V^{-1} 초기값 = (1/λ) I
-        self.V_inv = (1.0 / lam_ridge) * torch.eye(d_proj, device=self.device)
+        # -------- Model Identity Embedding (default: freeze) --------
+        self.d_model_emb = int(d_model_emb)
+        self.model_emb = nn.Embedding(self.n_models, self.d_model_emb).to(self.device)
+        self.model_proj = nn.Linear(self.d_model_emb, self.d_proj, bias=False).to(self.device)
 
-        # SupCon replay buffer (CPU에 저장)
+        # -------- Context Encoder B --------
+        b_type = b_type.lower().strip()
+        self.b_type = b_type
+        if b_type == "linear":
+            self.B = nn.Linear(self.d_ctx, self.d_proj, bias=False).to(self.device)
+        elif b_type == "mlp":
+            d_hidden = self.d_proj * int(b_hidden_mult)
+            self.B = nn.Sequential(
+                nn.Linear(self.d_ctx, d_hidden),
+                nn.ReLU(),
+                nn.Linear(d_hidden, d_hidden),
+                nn.ReLU(),
+                nn.Linear(d_hidden, self.d_proj),
+                nn.LayerNorm(self.d_proj),
+            ).to(self.device)
+        else:
+            raise ValueError(f"b_type must be 'linear' or 'mlp', got {b_type}")
+
+        # -------- Online bandit parameters --------
+        self.theta = nn.Parameter(torch.zeros(self.d_final_feature, device=self.device))
+
+        self.register_buffer(
+            "V_inv",
+            (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=self.device)
+        )
+
+        # -------- Offline SupCon buffer (지금 파이프라인에선 사실상 미사용) --------
         self.buffer_x: List[torch.Tensor] = []
         self.buffer_y: List[int] = []
-        self.buffer_max_size = 2000
+        self.buffer_max_size = int(buffer_max_size)
 
-        # Optimizers
-        self.opt_theta = torch.optim.Adam(
-            [self.theta], lr=0.1, weight_decay=lam_ridge
+        # -------- Offline optimizer: B만 --------
+        self.opt_b: Optional[torch.optim.Optimizer] = torch.optim.Adam(
+            self.B.parameters(), lr=float(lr_b)
         )
-        self.opt_b = torch.optim.Adam(self.B.parameters(), lr=1e-3)
 
-    # ----------------- Projection -----------------
-    def forward_proj(self, x: torch.Tensor) -> torch.Tensor:
+        # -------- Online LBFGS settings --------
+        self.theta_solver = theta_solver
+        self.lbfgs_max_iter = int(lbfgs_max_iter)
+        self.lbfgs_history_size = int(lbfgs_history_size)
+        self.lbfgs_line_search = lbfgs_line_search
+
+        # -------- Online history buffer: (T,K,d_proj) --------
+        self._K: Optional[int] = None
+        self._T: int = 0
+        self._cap: int = int(hist_init_capacity)
+        self._Z_hist: Optional[torch.Tensor] = None
+        self._y_hist: Optional[torch.Tensor] = None  # (T,), 0..K (outside=0)
+
+        self._freeze_model_parts()
+
+    # ======================================================
+    # Utils: norm clipping (||x||<=1)
+    # ======================================================
+    def _clip_norm(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.to(self.device)
+        norm = torch.linalg.norm(x, dim=-1, keepdim=True)
+        scale = torch.clamp(norm, min=1.0)
+        return x / scale
+
+    # ======================================================
+    # Input parsing: index-format or onehot-format
+    # ======================================================
+    def _split_input(self, x_combined: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        x: (..., d_in)
-        return: (..., d_proj) (ℓ2 정규화)
+        return:
+          x_ctx: (..., d_ctx)
+          m_idx: (...,) long
         """
-        z = self.B(x)
+        if x_combined.dim() == 1:
+            x_combined = x_combined.unsqueeze(0)
+        x_combined = x_combined.to(self.device)
+
+        D = x_combined.shape[-1]
+        if D == self.d_ctx + 1:
+            x_ctx = x_combined[..., :self.d_ctx]
+            m_raw = x_combined[..., self.d_ctx]
+            # float로 들어오는 model idx 방어적으로 반올림
+            m_idx = torch.round(m_raw).long()
+        elif D == self.d_ctx + self.n_models:
+            x_ctx = x_combined[..., :self.d_ctx]
+            onehot = x_combined[..., self.d_ctx:]
+            m_idx = torch.argmax(onehot, dim=-1).long()
+        else:
+            raise ValueError(
+                f"Input dim mismatch. got {D}, expected {self.d_ctx+1} (idx) or {self.d_ctx+self.n_models} (onehot)"
+            )
+
+        m_idx = m_idx.clamp(min=0, max=self.n_models - 1)
+        return x_ctx, m_idx
+
+    # ======================================================
+    # Projection: z_final = z_ctx * z_model
+    # ======================================================
+    def forward_proj(self, x_combined: torch.Tensor) -> torch.Tensor:
+        x_ctx, m_idx = self._split_input(x_combined)
+
+        z_ctx = self._clip_norm(self.B(x_ctx))
+
+        m_vec = self.model_emb(m_idx)
+        z_model = self._clip_norm(self.model_proj(m_vec))
+
+        z_final = self._clip_norm(z_ctx * z_model)
+        return z_final
+
+    # Offline SupCon용: context만
+    def forward_ctx_supcon(self, x_ctx: torch.Tensor) -> torch.Tensor:
+        if x_ctx.dim() == 1:
+            x_ctx = x_ctx.unsqueeze(0)
+        x_ctx = x_ctx.to(self.device)
+        z = self.B(x_ctx)
         return F.normalize(z, dim=-1)
 
-    # ----------------- Freeze / Reset -----------------
-    def freeze_B(self):
-        """
-        Online bandit phase에서 B를 고정하고 θ + V_inv만 학습하기 위한 함수.
-        """
-        for p in self.B.parameters():
+    # ======================================================
+    # Freeze / Unfreeze
+    # ======================================================
+    def _freeze_model_parts(self):
+        for p in self.model_emb.parameters():
             p.requires_grad = False
-        self.opt_b = None
+        for p in self.model_proj.parameters():
+            p.requires_grad = False
 
     def unfreeze_B(self, lr_b: float = 1e-3):
-        """
-        Offline pretraining phase에서 B를 다시 학습할 때 사용.
-        """
+        print(f"[MNLRouter] Unfreezing B only (lr={lr_b})...")
         for p in self.B.parameters():
             p.requires_grad = True
-        self.opt_b = torch.optim.Adam(self.B.parameters(), lr=lr_b)
+        self._freeze_model_parts()
+        self.opt_b = torch.optim.Adam(self.B.parameters(), lr=float(lr_b))
+
+    def freeze_B(self):
+        print("[MNLRouter] Freezing B & model parts...")
+        for p in self.B.parameters():
+            p.requires_grad = False
+        self._freeze_model_parts()
+        self.opt_b = None
 
     def reset_for_online(self):
-        """
-        Online bandit 시작 전에 θ, V_inv, SupCon buffer 초기화.
-        B는 freeze 된 상태로 유지.
-        """
+        print("[MNLRouter] Resetting theta & V_inv & history for online phase...")
         with torch.no_grad():
             self.theta.zero_()
-            self.V_inv = (1.0 / self.lam_ridge) * torch.eye(
-                self.d_proj, device=self.device
+            self.V_inv.copy_(
+                (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=self.device)
             )
-        self.buffer_x.clear()
-        self.buffer_y.clear()
+        self._reset_history()
 
-    # ----------------- MNL Scoring -----------------
+    def _reset_history(self):
+        self._K = None
+        self._T = 0
+        self._Z_hist = None
+        self._y_hist = None
+
+    # ======================================================
+    # MNL scoring
+    # ======================================================
     def get_scores(self, X_S: torch.Tensor) -> torch.Tensor:
-        """
-        X_S: (|S|, d_in) or (B, |S|, d_in)
-        return:
-          - (|S|,)   if X_S.dim() == 2
-          - (B, |S|) if X_S.dim() == 3
-        """
+        z = self.forward_proj(X_S)
         if X_S.dim() == 2:
-            z = self.forward_proj(X_S)          # (|S|, d_proj)
-            logits = z @ self.theta             # (|S|,)
-        elif X_S.dim() == 3:
-            z = self.forward_proj(X_S)          # (B, |S|, d_proj)
-            logits = torch.einsum("bid,d->bi", z, self.theta)
-        else:
-            raise ValueError("X_S must be 2D or 3D tensor.")
-        return logits
+            return z @ self.theta
+        if X_S.dim() == 3:
+            return torch.einsum("bid,d->bi", z, self.theta)
+        raise ValueError("X_S must be 2D or 3D tensor.")
 
-    # ----------------- θ noise 샘플링 -----------------
-    def sample_theta_noise(
-        self,
-        alpha_t: float,
-        M: int = 4,
-    ) -> torch.Tensor:
-        """
-        θ̃^(i) ~ N(θ̂, α_t^2 V^{-1}) 의 noise 부분만 미리 샘플링.
-
-        return:
-          noise_vectors: (d_proj, M)
-        """
+    # ======================================================
+    # TS / Optimistic reward
+    # ======================================================
+    def sample_theta_noise(self, alpha_t: float, M: int = 4) -> torch.Tensor:
+        d_feat = self.d_final_feature
         with torch.no_grad():
             try:
                 L = torch.linalg.cholesky(self.V_inv)
             except RuntimeError:
                 L = torch.linalg.cholesky(
-                    self.V_inv + 1e-6 * torch.eye(self.d_proj, device=self.device)
+                    self.V_inv + 1e-6 * torch.eye(d_feat, device=self.device)
                 )
+            u = torch.randn(d_feat, M, device=self.device)
+            return float(alpha_t) * (L @ u)
 
-            u = torch.randn(self.d_proj, M, device=self.device)  # (d_proj, M)
-            noise_vectors = alpha_t * (L @ u)                    # (d_proj, M)
-        return noise_vectors
-
-    # ----------------- Optimistic reward Re(x, S) -----------------
-    def sample_optimistic_reward(
+    def sample_optimistic_reward_batch(
         self,
-        X_S: torch.Tensor,
-        alpha_t: float,
-        M: int = 4,
-        noise_vectors: Optional[torch.Tensor] = None,
-    ) -> float:
-        """
-        Unknown-horizon 알고리즘에서 ũ_j, Re(x, S) 근사.
-        """
-        with torch.no_grad():
-            z_s = self.forward_proj(X_S)  # (|S|, d_proj)
-
-            if noise_vectors is None:
-                noise_vectors = self.sample_theta_noise(alpha_t=alpha_t, M=M)
-
-            mean_scores = z_s @ self.theta                         # (|S|,)
-            uncertainty = z_s @ noise_vectors                       # (|S|, M)
-            sampled_scores = mean_scores.unsqueeze(1) + uncertainty  # (|S|, M)
-            optimistic_u = torch.max(sampled_scores, dim=1).values   # (|S|,)
-
-            max_u = torch.max(optimistic_u)
-            exps = torch.exp(optimistic_u - max_u)
-            denom = torch.exp(-max_u) + exps.sum()
-            R_tilde = (exps.sum() / denom).item()
-            return R_tilde
-
-    # ----------------- SupCon buffer -----------------
-    def add_to_buffer(self, x_feature: torch.Tensor, y_idx: int):
-        """
-        x_feature: (d_in,) – context + one-hot(model)
-        y_idx    : 선택된 모델 index
-        """
-        self.buffer_x.append(x_feature.detach().cpu())
-        self.buffer_y.append(int(y_idx))
-        if len(self.buffer_x) > self.buffer_max_size:
-            self.buffer_x.pop(0)
-            self.buffer_y.pop(0)
-
-    # ----------------- SupCon loss -----------------
-    def supcon_loss(
-        self,
-        features: torch.Tensor,  # (B, d_proj)
-        labels: torch.Tensor,    # (B,)
+        X_S_batch: torch.Tensor,      # (B, K, d_in)
+        noise_vectors: torch.Tensor,  # (d, M)
     ) -> torch.Tensor:
-        """
-        Supervised Contrastive Loss (Khosla et al., 2020).
-        """
+        with torch.no_grad():
+            z = self.forward_proj(X_S_batch)                           # (B, K, d)
+            mean = torch.einsum("bkd,d->bk", z, self.theta)            # (B, K)
+            unc = torch.einsum("bkd,dm->bkm", z, noise_vectors)        # (B, K, M)
+            uopt = (mean.unsqueeze(-1) + unc).amax(dim=-1)             # (B, K)
+
+            max_u = uopt.max(dim=1, keepdim=True).values               # (B, 1)
+            exps = torch.exp(uopt - max_u)
+            sumexp = exps.sum(dim=1)
+            denom = torch.exp(-max_u.squeeze(1)) + sumexp
+            return sumexp / denom
+
+    # ======================================================
+    # Offline: SupCon only (B만 업데이트)
+    # ======================================================
+    def supcon_loss(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         B = features.shape[0]
         if B < 2:
             return torch.tensor(0.0, device=self.device)
 
-        labels = labels.view(-1)
-        mask_pos = (labels.unsqueeze(0) == labels.unsqueeze(1)).float().to(self.device)
+        labels = labels.view(-1).to(self.device)
+        feats = F.normalize(features, dim=-1)
+
+        mask_pos = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
         mask_self = torch.eye(B, device=self.device)
 
-        sim = torch.matmul(features, features.T) / self.supcon_temp  # (B,B)
-        logits = sim - mask_self * 1e9                               # self-sim ~ -inf
+        sim = torch.matmul(feats, feats.T) / self.supcon_temp
+        logits = sim - mask_self * 1e9
 
         mask_pos = mask_pos - mask_self
-
         log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
 
         pos_count = mask_pos.sum(dim=1).clamp_min(1.0)
         loss_i = -(log_prob * mask_pos).sum(dim=1) / pos_count
         return loss_i.mean()
 
-    # ----------------- Joint Update (θ + B + V_inv) -----------------
+    def supcon_step(
+        self,
+        X_batch: torch.Tensor,   # (B, d_ctx) or (B, d_ctx+1) or (B, d_ctx+n_models)
+        y_batch: torch.Tensor,   # (B,) winner index
+        lambda_sc: float = 1.0,
+    ) -> float:
+        if lambda_sc <= 0.0:
+            return 0.0
+        if self.opt_b is None:
+            raise RuntimeError("Run unfreeze_B() first.")
+
+        self.train()
+        self.opt_b.zero_grad(set_to_none=True)
+
+        X_batch = X_batch.to(self.device)
+        x_ctx = X_batch[..., :self.d_ctx]
+
+        z = self.forward_ctx_supcon(x_ctx)
+        loss = self.supcon_loss(z, y_batch)
+        (float(lambda_sc) * loss).backward()
+        self.opt_b.step()
+        return float(loss.item())
+
+    # ======================================================
+    # Online: full-history MLE for theta only (LBFGS)
+    # ======================================================
+    def _ensure_capacity(self, need_T: int):
+        if self._Z_hist is None or self._y_hist is None:
+            return
+        if need_T <= self._cap:
+            return
+
+        new_cap = self._cap
+        while new_cap < need_T:
+            new_cap *= 2
+
+        Z_new = torch.empty(
+            (new_cap, self._K, self.d_final_feature),
+            device=self.device,
+            dtype=self._Z_hist.dtype
+        )
+        y_new = torch.empty((new_cap,), device=self.device, dtype=self._y_hist.dtype)
+
+        if self._T > 0:
+            Z_new[: self._T].copy_(self._Z_hist[: self._T])
+            y_new[: self._T].copy_(self._y_hist[: self._T])
+
+        self._Z_hist = Z_new
+        self._y_hist = y_new
+        self._cap = new_cap
+
+    def _init_history_if_needed(self, K: int):
+        if self._K is None:
+            self._K = int(K)
+            self._Z_hist = torch.empty(
+                (self._cap, self._K, self.d_final_feature),
+                device=self.device,
+                dtype=torch.float32
+            )
+            self._y_hist = torch.empty((self._cap,), device=self.device, dtype=torch.long)
+            self._T = 0
+        else:
+            if int(K) != self._K:
+                raise ValueError(f"|S_t|가 고정이 아니다. expected K={self._K}, got K={K}")
+
+    def _objective_vectorized(self, Z_batch: torch.Tensor, y_batch: torch.Tensor) -> torch.Tensor:
+        T = Z_batch.shape[0]
+        logits = torch.einsum("tkd,d->tk", Z_batch, self.theta)            # (T, K)
+        zero_col = torch.zeros((T, 1), device=self.device, dtype=logits.dtype)
+        full_logits = torch.cat([zero_col, logits], dim=1)                 # (T, K+1)
+
+        nll = F.cross_entropy(full_logits, y_batch, reduction="sum")
+        ridge = 0.5 * self.lambda_0 * torch.sum(self.theta * self.theta)
+        return nll + ridge
+
+    def _solve_theta_minimize(self) -> float:
+        if self._T == 0:
+            return 0.0
+        if self.theta_solver.lower() != "lbfgs":
+            raise ValueError("theta_solver는 현재 lbfgs만 지원한다")
+
+        assert self._Z_hist is not None and self._y_hist is not None
+        Z_batch = self._Z_hist[: self._T]
+        y_batch = self._y_hist[: self._T]
+
+        opt = torch.optim.LBFGS(
+            [self.theta],
+            lr=1.0,
+            max_iter=self.lbfgs_max_iter,
+            history_size=self.lbfgs_history_size,
+            line_search_fn=self.lbfgs_line_search,
+        )
+
+        def closure():
+            opt.zero_grad(set_to_none=True)
+            loss = self._objective_vectorized(Z_batch, y_batch)
+            loss.backward()
+            return loss
+
+        loss = opt.step(closure)
+        return float(loss.item()) if hasattr(loss, "item") else float(loss)
+
     def update(
         self,
-        X_S: torch.Tensor,        # (|S|, d_in)
-        y_vec: torch.Tensor,      # one-hot (|S|), all-zero면 outside option
-        batch_supcon_size: int = 64,
-        lambda_sc: float = 1.0,   # SupCon 가중치
+        X_S: torch.Tensor,     # (K, d_in)
+        y_vec: torch.Tensor,   # one-hot(K,) or all-zero(outside)
+        batch_supcon_size: int = 64,  # not used
+        lambda_sc: float = 0.0,       # not used
     ) -> Tuple[float, float]:
-        """
-        한 라운드 (x_t, S_t, y_t)에 대해
-        - θ: MNL NLL loss로 업데이트
-        - B: MNL NLL + λ_sc * SupCon loss joint gradient로 업데이트 (opt_b가 있을 때만)
-        - V_inv: 현재 z 기준 Sherman-Morrison 업데이트
-        """
         self.train()
+        X_S = X_S.to(self.device)
+        y_vec = y_vec.to(self.device)
 
-        # ----- 1. MNL Loss -----
-        z_s = self.forward_proj(X_S)            # (|S|, d_proj)
-        logits = z_s @ self.theta               # (|S|,)
+        # target idx (outside=0)
+        max_val, arg = torch.max(y_vec, dim=0)
+        target_idx = torch.where(
+            max_val > 0,
+            arg.long() + 1,
+            torch.zeros((), device=self.device, dtype=torch.long)
+        )
 
-        zero_tensor = torch.tensor([0.0], device=self.device)
-        full_logits = torch.cat([zero_tensor, logits], dim=0)  # (|S|+1,)
+        z_final = self.forward_proj(X_S).detach().contiguous()  # (K, d)
+        K = z_final.shape[0]
+        self._init_history_if_needed(K)
 
-        log_probs = torch.log_softmax(full_logits, dim=0)
+        self._ensure_capacity(self._T + 1)
+        assert self._Z_hist is not None and self._y_hist is not None
 
-        if y_vec.sum() == 0:
-            # outside option
-            target_idx = 0
-        else:
-            target_idx = torch.argmax(y_vec) + 1
+        self._Z_hist[self._T].copy_(z_final)
+        self._y_hist[self._T] = target_idx
+        self._T += 1
 
-        loss_mnl = -log_probs[target_idx]
+        loss_total = self._solve_theta_minimize()
 
-        # ----- 2. SupCon Loss (buffer에서 미니배치) -----
-        loss_sc = torch.tensor(0.0, device=self.device)
-        if (lambda_sc > 0.0) and (len(self.buffer_x) >= batch_supcon_size):
-            idxs = np.random.choice(len(self.buffer_x), batch_supcon_size, replace=False)
-            batch_x = torch.stack([self.buffer_x[i] for i in idxs]).to(self.device)
-            batch_y = torch.tensor([self.buffer_y[i] for i in idxs], device=self.device)
-
-            z_batch = self.forward_proj(batch_x)
-            loss_sc = self.supcon_loss(z_batch, batch_y)
-
-        # ----- 3. Backward (θ + B) -----
-        self.opt_theta.zero_grad()
-        if self.opt_b is not None:
-            self.opt_b.zero_grad()
-
-        total_loss = loss_mnl + lambda_sc * loss_sc
-        total_loss.backward()
-
-        self.opt_theta.step()
-        if self.opt_b is not None:
-            self.opt_b.step()
-
-        # ----- 4. V_inv 업데이트 (Sherman–Morrison) -----
+        # V_inv 업데이트 (current z only)
         with torch.no_grad():
-            z_s_det = z_s.detach()
-            for j in range(z_s_det.shape[0]):
-                z = z_s_det[j]
+            for j in range(z_final.shape[0]):
+                z = z_final[j]
                 v = self.V_inv @ z
                 denom = 1.0 + z @ v
                 self.V_inv -= torch.outer(v, v) / denom
 
-        return float(loss_mnl.item()), float(loss_sc.item())
+        return float(loss_total), 0.0
 
-
-# ----------------- 공통 유틸: x_ctx + one-hot → X_S -----------------
-def build_X_S_from_context(
-    x_ctx: np.ndarray,   # (d_ctx,)
-    S: List[int],        # 모델 index 리스트
-    N_models: int,
+# ----------------------------------------------------------------------
+# Helper Functions
+# ----------------------------------------------------------------------
+def build_X_S_from_context_idx(
+    x_ctx: np.ndarray,
+    S: List[int],
     device: torch.device,
 ) -> torch.Tensor:
     """
-    context x_ctx와 서버 one-hot을 붙여서
-    Algorithm 1에서 쓰는 x_{tj} feature를 만든다. (Vectorized)
+    index-format: (d_ctx + 1)  [x_ctx | model_idx]
     """
     M = len(S)
-
     x_ctx_tensor = torch.from_numpy(x_ctx).float().to(device)
-    x_repeated = x_ctx_tensor.unsqueeze(0).expand(M, -1)  # (M, d_ctx)
-
-    indices = torch.tensor(S, device=device)
-    one_hots = F.one_hot(indices, num_classes=N_models).float()  # (M, N_models)
-
-    X_S = torch.cat([x_repeated, one_hots], dim=1)  # (M, d_ctx + N_models)
-    return X_S
-
-
-def predict_model(
-    router: MNLRouter,
-    x_ctx: np.ndarray,
-    N_models: int,
-    device: torch.device,
-) -> int:
-    """
-    하나의 컨텍스트에 대해
-    argmax_k z(x, k)^T θ 를 반환한다.
-    (Queue 환경, RouterBench 등 공통 inference 용도)
-    """
-    router.eval()
-    with torch.no_grad():
-        X_all = build_X_S_from_context(
-            x_ctx, list(range(N_models)), N_models, device
-        )
-        logits = router.get_scores(X_all)  # (N_models,)
-        k_hat = int(torch.argmax(logits).item())
-    return k_hat
+    x_rep = x_ctx_tensor.unsqueeze(0).expand(M, -1)  # (M, d_ctx)
+    idx = torch.tensor(S, device=device, dtype=torch.float32).unsqueeze(1)  # (M,1)
+    return torch.cat([x_rep, idx], dim=1)  # (M, d_ctx+1)
