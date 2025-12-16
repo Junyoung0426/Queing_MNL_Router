@@ -12,15 +12,14 @@ class MNLRouter(nn.Module):
     """
     Vanilla linear MNL router (no projection B, no SupCon).
 
-    - 입력 feature x: context + model one-hot  → R^{d_in}
+    입력 feature x는 one-hot 기반으로 고정한다:
+      x = [x_ctx | onehot(model)] ∈ R^{d_in},  d_in = d_ctx + n_models
+
     - θ ∈ R^{d_in}
     - V_inv ≈ (λ_0 I + Σ x x^T)^{-1}  (Sherman–Morrison)
-    - Thompson sampling + optimistic reward R^e(x,S) 구현.
-
-    핵심:
-      Algorithm 1 Line 10:
+    - Algorithm 1 Line 10:
         θ̂_t = argmin_θ  -∑_{i=1}^t log p(y_i | x_i,S_i; θ) + (λ_0/2)||θ||^2
-        매 라운드마다 LBFGS로 minimize 한다.
+      를 매 라운드 LBFGS로 minimize 한다.
 
     GPU 최적화:
       - 히스토리를 (T, K, d) 텐서 버퍼로 누적한다.
@@ -40,8 +39,8 @@ class MNLRouter(nn.Module):
     ):
         super().__init__()
 
-        self.d_in = d_in
-        self.d = d_in
+        self.d_in = int(d_in)
+        self.d = int(d_in)
         self.device = torch.device(device)
         self.lambda_0 = float(lambda_0)
 
@@ -57,9 +56,9 @@ class MNLRouter(nn.Module):
         self.lbfgs_history_size = int(lbfgs_history_size)
         self.lbfgs_line_search = lbfgs_line_search
 
-        # ---------- History buffer (GPU-friendly) ----------
-        # X_hist: (cap, K, d)  (K는 첫 update에서 확정)
-        # y_hist: (cap,)       (정답 index: outside=0, inside=1..K)
+        # ---------- History buffer ----------
+        # X_hist: (cap, K, d)
+        # y_hist: (cap,)  (outside=0, inside=1..K)
         self._K: Optional[int] = None
         self._T: int = 0
         self._cap: int = int(hist_init_capacity)
@@ -77,17 +76,6 @@ class MNLRouter(nn.Module):
         scale = torch.clamp(norm, min=1.0)
         return x / scale
 
-    def forward_proj(self, x: torch.Tensor) -> torch.Tensor:
-        return self._preprocess(x)
-
-    # ---------------- MNL scoring ----------------
-    def get_scores(self, X_S: torch.Tensor) -> torch.Tensor:
-        """
-        X_S: (|S|, d) or (B, |S|, d)
-        """
-        feats = self._preprocess(X_S)
-        logits = feats @ self.theta
-        return logits
 
     # ---------------- θ noise 샘플링 ----------------
     def sample_theta_noise(self, alpha_t: float, M: int = 4) -> torch.Tensor:
@@ -104,8 +92,7 @@ class MNLRouter(nn.Module):
                 )
 
             u = torch.randn(self.d, M, device=self.device)
-            noise_vectors = float(alpha_t) * (L @ u)
-        return noise_vectors
+            return float(alpha_t) * (L @ u)
 
     # ---------------- Optimistic reward R^e(x,S) (single) ----------------
     def sample_optimistic_reward(
@@ -115,15 +102,11 @@ class MNLRouter(nn.Module):
         M: int = 4,
         noise_vectors: Optional[torch.Tensor] = None,
     ) -> float:
-
         with torch.no_grad():
             feats = self._preprocess(X_S)  # (K, d)
 
             if noise_vectors is None:
                 noise_vectors = self.sample_theta_noise(alpha_t=alpha_t, M=M)
-
-            if noise_vectors.shape[0] != feats.shape[-1]:
-                noise_vectors = noise_vectors[: feats.shape[-1]]
 
             mean_scores = feats @ self.theta                         # (K,)
             uncertainty = feats @ noise_vectors                      # (K, M)
@@ -142,19 +125,17 @@ class MNLRouter(nn.Module):
         X_S_batch: torch.Tensor,      # (B, K, d_in)
         noise_vectors: torch.Tensor,  # (d, M)
     ) -> torch.Tensor:
-
         with torch.no_grad():
-            feats = self._preprocess(X_S_batch)  # (B, K, d)
+            feats = self._preprocess(X_S_batch)                      # (B, K, d)
+            mean = torch.matmul(feats, self.theta)                   # (B, K)
+            unc = torch.einsum("bkd,dm->bkm", feats, noise_vectors)  # (B, K, M)
+            uopt = (mean.unsqueeze(-1) + unc).amax(dim=-1)           # (B, K)
 
-            mean = torch.matmul(feats, self.theta)                      # (B, K)
-            unc = torch.einsum("bkd,dm->bkm", feats, noise_vectors)     # (B, K, M)
-            uopt = (mean.unsqueeze(-1) + unc).amax(dim=-1)              # (B, K)
-
-            max_u = uopt.max(dim=1, keepdim=True).values                # (B, 1)
-            exps = torch.exp(uopt - max_u)                              # (B, K)
-            sumexp = exps.sum(dim=1)                                    # (B,)
-            denom = torch.exp(-max_u.squeeze(1)) + sumexp               # (B,)
-            return sumexp / denom                                       # (B,)
+            max_u = uopt.max(dim=1, keepdim=True).values             # (B, 1)
+            exps = torch.exp(uopt - max_u)                           # (B, K)
+            sumexp = exps.sum(dim=1)                                 # (B,)
+            denom = torch.exp(-max_u.squeeze(1)) + sumexp            # (B,)
+            return sumexp / denom                                    # (B,)
 
     # ---------------- history buffer helpers ----------------
     def _ensure_capacity(self, need_T: int):
@@ -167,16 +148,8 @@ class MNLRouter(nn.Module):
         while new_cap < need_T:
             new_cap *= 2
 
-        X_new = torch.empty(
-            (new_cap, self._K, self.d),
-            device=self.device,
-            dtype=self._X_hist.dtype,
-        )
-        y_new = torch.empty(
-            (new_cap,),
-            device=self.device,
-            dtype=self._y_hist.dtype,
-        )
+        X_new = torch.empty((new_cap, self._K, self.d), device=self.device, dtype=self._X_hist.dtype)
+        y_new = torch.empty((new_cap,), device=self.device, dtype=self._y_hist.dtype)
 
         if self._T > 0:
             X_new[: self._T].copy_(self._X_hist[: self._T])
@@ -189,22 +162,12 @@ class MNLRouter(nn.Module):
     def _init_history_if_needed(self, K: int):
         if self._K is None:
             self._K = int(K)
-            self._X_hist = torch.empty(
-                (self._cap, self._K, self.d),
-                device=self.device,
-                dtype=torch.float32,
-            )
-            self._y_hist = torch.empty(
-                (self._cap,),
-                device=self.device,
-                dtype=torch.long,
-            )
+            self._X_hist = torch.empty((self._cap, self._K, self.d), device=self.device, dtype=torch.float32)
+            self._y_hist = torch.empty((self._cap,), device=self.device, dtype=torch.long)
             self._T = 0
         else:
             if int(K) != self._K:
-                raise ValueError(
-                    f"|S_t|가 고정이 아니다. expected K={self._K}, got K={K}"
-                )
+                raise ValueError(f"|S_t|가 고정이 아니다. expected K={self._K}, got K={K}")
 
     # ---------------- Line 10 objective ----------------
     def _objective(self, X_batch: torch.Tensor, y_batch: torch.Tensor) -> torch.Tensor:
@@ -222,18 +185,14 @@ class MNLRouter(nn.Module):
         return nll + ridge
 
     def _solve_theta_minimize(self) -> float:
-        """
-        매 라운드 θ̂_t를 LBFGS로 minimize 한다.
-        """
         if self._T == 0:
             return 0.0
         if self.theta_solver.lower() != "lbfgs":
-            raise ValueError("theta_solver는 현재 lbfgs만 사용")
+            raise ValueError("theta_solver는 현재 lbfgs만 사용한다")
 
         assert self._X_hist is not None and self._y_hist is not None
-
-        X_batch = self._X_hist[: self._T]  # view
-        y_batch = self._y_hist[: self._T]  # view
+        X_batch = self._X_hist[: self._T]
+        y_batch = self._y_hist[: self._T]
 
         opt = torch.optim.LBFGS(
             [self.theta],
@@ -258,34 +217,32 @@ class MNLRouter(nn.Module):
         X_S: torch.Tensor,        # (K, d_in)
         y_vec: torch.Tensor,      # one-hot(K,) or all-zero(outside)
     ) -> Tuple[float, float]:
-        """
-        1) (feats_t, target_idx)를 히스토리 텐서 버퍼에 append
-        2) θ̂_t = argmin(...) 를 LBFGS로 minimize
-        3) V_inv를 Sherman–Morrison으로 업데이트
-        """
         self.train()
+
+        if X_S.shape[-1] != self.d:
+            raise ValueError(f"X_S last dim mismatch. got {X_S.shape[-1]}, expected {self.d}")
 
         feats_t = self._preprocess(X_S).detach().contiguous()  # (K, d)
         K = feats_t.shape[0]
         self._init_history_if_needed(K)
 
-        # y_vec -> target index (outside=0, inside=1..K)  (동기화 .item() 안 쓴다)
         y_vec = y_vec.to(self.device)
-        max_val, arg = torch.max(y_vec, dim=0)  # 0-d tensor
-        zero = torch.zeros((), device=self.device, dtype=torch.long)
-        target = torch.where(max_val > 0, arg.long() + 1, zero)
+        max_val, arg = torch.max(y_vec, dim=0)
+        target = torch.where(
+            max_val > 0,
+            arg.long() + 1,
+            torch.zeros((), device=self.device, dtype=torch.long),
+        )
 
-        # append to history buffer
         self._ensure_capacity(self._T + 1)
         assert self._X_hist is not None and self._y_hist is not None
         self._X_hist[self._T].copy_(feats_t)
         self._y_hist[self._T] = target
         self._T += 1
 
-        # Line 10 minimize
         loss_val = self._solve_theta_minimize()
 
-        # Line 11 V_inv 업데이트 (Sherman–Morrison)
+        # V_inv 업데이트 (Sherman–Morrison)
         with torch.no_grad():
             for j in range(feats_t.shape[0]):
                 x = feats_t[j]
@@ -293,7 +250,7 @@ class MNLRouter(nn.Module):
                 denom = 1.0 + x @ v
                 self.V_inv -= torch.outer(v, v) / denom
 
-        return loss_val, 0.0
+        return float(loss_val), 0.0
 
     def add_to_buffer(self, x_feature: torch.Tensor, y_idx: int):
         return
@@ -303,18 +260,21 @@ class MNLRouter(nn.Module):
 
 
 # ----------------- 유틸 함수 -----------------
-
-def build_X_S_from_context_idx(
-    x_ctx: np.ndarray,
-    S: List[int],
+def build_X_S_from_context_onehot(
+    x_ctx: np.ndarray,   # (d_ctx,)
+    S: List[int],        # model index list
+    n_models: int,
     device: torch.device,
 ) -> torch.Tensor:
     """
-    index-format: (d_ctx + 1)  [x_ctx | model_idx]
+    onehot-format: (d_ctx + n_models) [x_ctx | onehot(model)]
     """
     M = len(S)
     x_ctx_tensor = torch.from_numpy(x_ctx).float().to(device)
     x_rep = x_ctx_tensor.unsqueeze(0).expand(M, -1)  # (M, d_ctx)
-    idx = torch.tensor(S, device=device, dtype=torch.float32).unsqueeze(1)  # (M,1)
-    return torch.cat([x_rep, idx], dim=1)  # (M, d_ctx+1)
+
+    indices = torch.tensor(S, device=device, dtype=torch.long)
+    one_hots = F.one_hot(indices, num_classes=n_models).float()
+
+    return torch.cat([x_rep, one_hots], dim=1)  # (M, d_ctx+n_models)
 

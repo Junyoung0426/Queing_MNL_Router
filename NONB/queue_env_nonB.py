@@ -6,7 +6,8 @@ import math
 
 import numpy as np
 import torch
-from mnl_router_nonB import MNLRouter, build_X_S_from_context_idx as build_X_S_from_context
+from mnl_router_nonB import MNLRouter, build_X_S_from_context_onehot as build_X_S_from_context
+
 from queue_config import QueueConfig
 
 
@@ -318,7 +319,6 @@ class QueueEnv:
 
             # joint update: θ + V_inv
             X_S = build_X_S_from_context(x_ctx, S_t, self.N_models, self.device)
-            # X_S = build_X_S_from_context(x_ctx, S_t, self.device)
             loss_mnl, loss_sc = self.router.update(X_S, y_vec)
             loss_mnl = loss_mnl / max(self.router._T, 1)   # _T는 router 내부 누적 라운드 수
             self.log_l_mnl += loss_mnl
