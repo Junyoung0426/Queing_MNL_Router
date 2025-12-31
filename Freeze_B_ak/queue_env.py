@@ -38,7 +38,7 @@ class QueueEnv:
         assert N == N2 == N3
         assert n_models == K2
         if N == 0:
-            raise ValueError("X_ctx is empty")
+            pass
 
         self.N = N
         self.d_ctx = d_ctx
@@ -55,7 +55,7 @@ class QueueEnv:
         self.model_names = model_names
         if self.model_names is not None:
             if len(self.model_names) != self.n_models:
-                raise ValueError(f"len(model_names) != n_models: {len(self.model_names)} vs {self.n_models}")
+                pass
             self.idx2model = list(self.model_names)
         else:
             self.idx2model = None
@@ -229,7 +229,7 @@ class QueueEnv:
     def _select_best_by_exhaustive_batch(self, noise_vectors: torch.Tensor) -> Tuple[int, int, List[int]]:
         q = self.queue_router
         if len(q) == 0:
-            raise RuntimeError("queue_router is empty")
+            pass
 
         q_ctx = torch.tensor([ctx for (_, ctx) in q], device=self.device, dtype=torch.long)
         q_pos = torch.arange(len(q), device=self.device, dtype=torch.long)

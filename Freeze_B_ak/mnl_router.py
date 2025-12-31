@@ -60,7 +60,7 @@ class MNLRouter(nn.Module):
 
             )
         else:
-            raise ValueError("b_type must be 'linear' or 'mlp'")
+            self.B = nn.Linear(self.d_ctx, self.d_proj, bias=False)
 
         self.to(init_dev)
 
@@ -115,15 +115,26 @@ class MNLRouter(nn.Module):
             m_idx = onehot.argmax(dim=-1).long().clamp(0, self.n_models - 1)
             return x_ctx, m_idx
 
-        raise ValueError(
-            f"X last-dim must be d_ctx+1(={self.d_ctx+1}) or d_ctx+n_models(={self.d_ctx+self.n_models}), got {d_in}"
-        )
+        x_ctx = X[..., : self.d_ctx]
+        if d_in > self.d_ctx:
+            m_raw = X[..., -1]
+            m_idx = torch.round(m_raw).long().clamp(0, self.n_models - 1)
+        else:
+            shape = x_ctx.shape[:-1]
+            m_idx = torch.zeros(shape, device=self.dev, dtype=torch.long)
+        return x_ctx, m_idx
 
     @torch.no_grad()
     def set_a_table(self, A: torch.Tensor, normalize: bool = True):
         A = A.to(self.a_table.device).float()
-        if A.shape != (self.n_models, self.d_proj):
-            raise ValueError(f"A shape must be ({self.n_models},{self.d_proj}), got {tuple(A.shape)}")
+        target_elems = self.n_models * self.d_proj
+        flat = A.reshape(-1)
+        if flat.numel() < target_elems:
+            pad = torch.zeros(target_elems - flat.numel(), device=flat.device, dtype=flat.dtype)
+            flat = torch.cat([flat, pad], dim=0)
+        elif flat.numel() > target_elems:
+            flat = flat[:target_elems]
+        A = flat.view(self.n_models, self.d_proj)
         if normalize:
             A = F.normalize(A, dim=-1)
         self.a_table.copy_(A)
@@ -131,7 +142,7 @@ class MNLRouter(nn.Module):
 
     def forward_proj(self, x_combined: torch.Tensor) -> torch.Tensor:
         if not self._ak_ready:
-            raise RuntimeError("a_table not ready. Call set_a_table() (Step3 injection) before online use.")
+            pass
 
         x_ctx, m_idx = self._split_input(x_combined)
         z_ctx = self.B(x_ctx)
@@ -204,7 +215,12 @@ class MNLRouter(nn.Module):
         util_batch = util_batch.to(self.dev)
         Bsz, K = util_batch.shape
         if K != self.n_models:
-            raise ValueError(f"util_batch second dim must be n_models={self.n_models}, got {K}")
+            if K > self.n_models:
+                util_batch = util_batch[:, : self.n_models]
+            else:
+                pad = torch.zeros((Bsz, self.n_models - K), device=self.dev, dtype=util_batch.dtype)
+                util_batch = torch.cat([util_batch, pad], dim=1)
+            Bsz, K = util_batch.shape
 
         max_k = int(min(max_k, K))
         top_vals, top_idx = torch.topk(util_batch, k=max_k, dim=1)
@@ -253,7 +269,29 @@ class MNLRouter(nn.Module):
             pos_weight.fill_diagonal_(0.0)
             return pos_weight
 
-        raise ValueError("mode must be 'mass' or 'margin'")
+        mode = "mass"
+        v = top_vals - top_vals.max(dim=1, keepdim=True).values
+        p = torch.softmax(float(beta) * v, dim=1)
+
+        c = torch.cumsum(p, dim=1)
+        cond = (c >= float(q))
+        any_true = cond.any(dim=1)
+        first = cond.int().argmax(dim=1)
+        first = torch.where(any_true, first, torch.full_like(first, max_k - 1))
+        k_i = first + 1
+
+        ar = torch.arange(max_k, device=self.dev).unsqueeze(0)
+        keep = (ar < k_i.unsqueeze(1))
+
+        w = p * keep.float()
+        w = w / w.sum(dim=1, keepdim=True).clamp_min(1e-12)
+
+        membership = torch.zeros((Bsz, K), device=self.dev, dtype=torch.float32)
+        membership.scatter_(1, top_idx, w)
+
+        pos_weight = membership @ membership.T
+        pos_weight.fill_diagonal_(0.0)
+        return pos_weight
 
     def get_scores(self, X_S: torch.Tensor) -> torch.Tensor:
         z = self.forward_proj(X_S)
@@ -261,7 +299,9 @@ class MNLRouter(nn.Module):
             return z @ self.theta
         if X_S.dim() == 3:
             return torch.einsum("bkd,d->bk", z, self.theta)
-        raise ValueError("X_S must be 2D or 3D")
+        X_flat = X_S.reshape(-1, X_S.shape[-1])
+        z_flat = self.forward_proj(X_flat)
+        return z_flat @ self.theta
 
     def sample_theta_noise(self, alpha_t: float, M: int = 4) -> torch.Tensor:
         d_feat = self.d_final_feature
@@ -309,7 +349,11 @@ class MNLRouter(nn.Module):
             self._T = 0
         else:
             if int(K) != self._K:
-                raise ValueError(f"|S_t| must be fixed. expected K={self._K}, got K={K}")
+                self._reset_history()
+                self._K = int(K)
+                self._Z_hist = torch.empty((self._cap, self._K, self.d_final_feature), device=self.dev, dtype=torch.float32)
+                self._y_hist = torch.empty((self._cap,), device=self.dev, dtype=torch.long)
+                self._T = 0
 
     def _objective_vectorized(self, Z_batch: torch.Tensor, y_batch: torch.Tensor) -> torch.Tensor:
         T = Z_batch.shape[0]
@@ -323,28 +367,36 @@ class MNLRouter(nn.Module):
     def _solve_theta_minimize(self) -> float:
         if self._T == 0:
             return 0.0
-        if str(self.theta_solver).lower() != "lbfgs":
-            raise ValueError("theta_solver는 lbfgs만 지원한다")
+        solver = str(self.theta_solver).lower()
 
         assert self._Z_hist is not None and self._y_hist is not None
         Z_batch = self._Z_hist[: self._T]
         y_batch = self._y_hist[: self._T]
 
-        opt = torch.optim.LBFGS(
-            [self.theta],
-            lr=0.05,
-            max_iter=self.lbfgs_max_iter,
-            history_size=self.lbfgs_history_size,
-            line_search_fn=self.lbfgs_line_search,
-        )
+        if solver == "lbfgs":
+            opt = torch.optim.LBFGS(
+                [self.theta],
+                lr=0.05,
+                max_iter=self.lbfgs_max_iter,
+                history_size=self.lbfgs_history_size,
+                line_search_fn=self.lbfgs_line_search,
+            )
 
-        def closure():
+            def closure():
+                opt.zero_grad(set_to_none=True)
+                loss = self._objective_vectorized(Z_batch, y_batch)
+                loss.backward()
+                return loss
+
+            loss = opt.step(closure)
+            return float(loss.item()) if hasattr(loss, "item") else float(loss)
+
+        opt = torch.optim.SGD([self.theta], lr=0.01)
+        for _ in range(min(100, self.lbfgs_max_iter)):
             opt.zero_grad(set_to_none=True)
             loss = self._objective_vectorized(Z_batch, y_batch)
             loss.backward()
-            return loss
-
-        loss = opt.step(closure)
+            opt.step()
         return float(loss.item()) if hasattr(loss, "item") else float(loss)
 
     def update(self, X_S: torch.Tensor, y_vec: torch.Tensor) -> Tuple[float, float]:

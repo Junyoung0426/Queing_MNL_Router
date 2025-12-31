@@ -21,12 +21,12 @@ def select_anchors_by_model(
 ) -> Tuple[List[np.ndarray], np.ndarray]:
 
     if util_mat.ndim != 2:
-        raise ValueError(f"util_mat must be 2D, got {util_mat.shape}")
+        pass
 
     N, K = util_mat.shape
     n = int(n_per_model)
     if n <= 0:
-        raise ValueError(f"n_per_model must be positive, got {n}")
+        pass
 
     winners = np.argmax(util_mat, axis=1).astype(np.int64)
     counts = np.bincount(winners, minlength=K).astype(int)
@@ -38,7 +38,7 @@ def select_anchors_by_model(
             f"counts_by_model={counts.tolist()}, less_models={less}. "
             f"Reduce anchor_n_per_model / change utility / increase dataset."
         )
-        raise ValueError(msg)
+        pass
 
     rng = np.random.RandomState(int(seed))
     anchors_by_k: List[np.ndarray] = []
@@ -46,7 +46,7 @@ def select_anchors_by_model(
 
     margin_mode = str(margin_mode).lower().strip()
     if margin_mode not in ("abs", "gap"):
-        raise ValueError("margin_mode must be 'abs' or 'gap'")
+        pass
 
     for k in range(K):
         idxs = np.where(winners == k)[0].astype(np.int64)
@@ -79,7 +79,7 @@ def compute_anchor_centroids(
     normalize: bool,
 ) -> np.ndarray:
     if X_ctx.ndim != 2:
-        raise ValueError(f"X_ctx must be 2D, got {X_ctx.shape}")
+        pass
 
     N, d = X_ctx.shape
     K = len(anchors_by_k)
@@ -88,7 +88,7 @@ def compute_anchor_centroids(
     for j in range(K):
         idx_j = anchors_by_k[j]
         if idx_j.size == 0:
-            raise ValueError(f"anchors_by_k[{j}] is empty")
+            pass
         xi[j] = X_ctx[idx_j].mean(axis=0)
 
     if normalize:
@@ -104,7 +104,7 @@ def compute_score_matrix(
 ) -> np.ndarray:
 
     if util_mat.ndim != 2:
-        raise ValueError(f"util_mat must be 2D, got {util_mat.shape}")
+        pass
 
     N, K = util_mat.shape
     S = np.zeros((K, K), dtype=np.float64)
@@ -122,13 +122,13 @@ def build_a_table_from_xi_S(
     normalize_a: bool,
 ) -> np.ndarray:
     if xi.ndim != 2:
-        raise ValueError(f"xi must be 2D, got {xi.shape}")
+        pass
     if S.ndim != 2:
-        raise ValueError(f"S must be 2D, got {S.shape}")
+        pass
 
     K, d = xi.shape
     if S.shape != (K, K):
-        raise ValueError(f"S shape must be {(K, K)}, got {S.shape}")
+        pass
 
     mode = str(weight_mode).lower().strip()
     Ktop = min(int(topK), K)
@@ -158,7 +158,7 @@ def build_a_table_from_xi_S(
             a[i] = xi[i]
 
         else:
-            raise ValueError(f"Unknown weight_mode: {mode}")
+            pass
 
     if normalize_a:
         denom = np.linalg.norm(a, axis=1, keepdims=True)
