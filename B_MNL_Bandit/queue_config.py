@@ -1,0 +1,107 @@
+# queue_config.py
+from dataclasses import dataclass
+from typing import Optional
+import torch
+
+
+@dataclass
+class QueueConfig:
+    # -----------------------------
+    # Logging / Seed
+    # -----------------------------
+    seed: int = 42
+    log_every: int = 1000
+    debug_verbose: bool = True
+    debug_topk: int = 3
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # -----------------------------
+    # Data
+    # -----------------------------
+    embedder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    test_size: float = 0.2
+
+    use_cost: bool = True
+    lam_cost: float = 50.0
+
+    d_ctx: Optional[int] = None
+    n_models: Optional[int] = None
+    
+    combine_mode: str = "mul"   # "mul" or "add"
+
+    # -----------------------------
+    # Queue / Bandit (Online)
+    # -----------------------------
+    assort_K: int = 2
+    arrival_rate: float = 0.9
+    max_steps: int = 200_000
+
+    # util -> r -> odds
+    r_eps: float = 1e-6
+    r_lo: float = 0.01
+    r_hi: float = 0.99
+
+    # unknown horizon schedule
+    kappa: float = 4.0
+    c1: float = 50.0
+
+    # ridge for theta + initial V_inv scale
+    lambda_0: float = 1.0
+    alpha_coef: float = 0.01
+
+    # Online LBFGS
+    lbfgs_max_iter: int = 50
+    lbfgs_history_size: int = 50
+    lbfgs_line_search: str = "strong_wolfe"
+    hist_init_capacity: int = 2048
+
+    # -----------------------------
+    # Offline split
+    # -----------------------------
+    offline_total_ratio: float = 0.10
+    offline_tie_eps: float = 1e-9
+    offline_seed_min_per_model: int = 10
+
+    # -----------------------------
+    # B Projection architecture (Offline)
+    # -----------------------------
+    d_proj: int = 128
+    b_type: str = "mlp"          # "none" / "linear" / "mlp"
+    b_hidden_mult: int = 2
+
+    # -----------------------------
+    # SupCon pretrain (B only, Offline)
+    # -----------------------------
+    supcon_temp: float = 0.07
+    supcon_bs: int = 512
+    offline_epochs: int = 10_000
+    offline_lr_B: float = 3e-4
+    supcon_grad_clip: float = 1.0
+
+    # positives selection: "top1" / "topr_mass"
+    supcon_pos_strategy: str = "top1"
+    supcon_topk_max_k: int = 3
+    supcon_topk_q: float = 0.8
+    supcon_topk_beta: float = 5.0
+    supcon_topk_delta: float = 1.0
+
+    # winner-balanced batch sampler (SupCon)
+    balance_min_classes: int = 8
+    balance_per_class: int = 64
+
+    # -----------------------------
+    # a_table (LLM embedding table)
+    # -----------------------------
+    # b_type=="none"이면 train.py에서 anchor_mode="all" 강제
+    # b_type!="none"이면 ak_anchor_mode로 all/sample 선택
+    ak_anchor_mode: str = "all"   # "all" or "sample"
+
+    anchor_n_per_model: int = 10
+    anchor_seed_offset: int = 777
+    anchor_xi_normalize: bool = False
+
+    # S/softmax 가중합
+    embed_a_normalize: bool = False
+    embed_weight_mode: str = "topk_softmax"  # "topk_softmax" / "softmax_all" / "self_centroid"
+    embed_topK: int = 3
+    embed_tau: float = 0.2
