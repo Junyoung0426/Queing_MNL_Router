@@ -94,7 +94,6 @@ def load_sprout_hf(
             "sample_id": ex.get("key", i),
             "prompt": str(ex.get("prompt", "")),
             "eval_name": str(ex.get("dataset", "sprout")),
-            "oracle_model_to_route_to": "",
         }
 
         ok = True

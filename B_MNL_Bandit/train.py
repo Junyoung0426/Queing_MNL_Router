@@ -67,6 +67,16 @@ def _to_jsonable(x: Any) -> Any:
         return [_to_jsonable(v) for v in list(x)]
     return str(x)
 
+def _safe_mean(x) -> float:
+    arr = np.asarray(x, dtype=np.float64)
+    return float(arr.mean()) if arr.size > 0 else float("nan")
+
+def _safe_tail_mean(x, tail_frac: float = 0.2) -> float:
+    arr = np.asarray(x, dtype=np.float64)
+    if arr.size == 0:
+        return float("nan")
+    n_tail = max(1, int(np.ceil(arr.size * float(tail_frac))))
+    return float(arr[-n_tail:].mean())
 
 def _cfg_to_dict(cfg: QueueConfig) -> Dict[str, Any]:
     if is_dataclass(cfg):
@@ -145,11 +155,19 @@ def _ensure_prompt_column(df: pd.DataFrame):
 
 
 def _dropna_required(df, models, cost_map, use_cost):
+    """
+    dropna 이후에도 원본 df row 추적이 가능하도록 orig_row를 보존한다.
+    - orig_row: dropna 전 df.index 기준
+    """
     need = list(models)
     if use_cost:
         need += [cost_map[m] for m in models if m in cost_map]
     need = list(dict.fromkeys(need))
-    return df.dropna(subset=need).reset_index(drop=True)
+
+    df2 = df.dropna(subset=need).copy()
+    df2["orig_row"] = df2.index.to_numpy()  # 원본 df index 저장
+    df2 = df2.reset_index(drop=True)
+    return df2
 
 
 def compute_acc_cost_util_all(
@@ -159,16 +177,16 @@ def compute_acc_cost_util_all(
     use_cost: bool,
     lam_cost: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    acc = df[models].astype(np.float64).to_numpy()
+    acc = df[models].astype(np.float32).to_numpy()
     if not use_cost:
         return acc, acc.copy()
 
     N, K = acc.shape
-    cost = np.zeros((N, K), dtype=np.float64)
+    cost = np.zeros((N, K), dtype=np.float32)
     for j, m in enumerate(models):
         col = cost_map.get(m, None)
         if col is not None and col in df.columns:
-            cost[:, j] = df[col].astype(np.float64).to_numpy()
+            cost[:, j] = df[col].astype(np.float32).to_numpy()
         else:
             cost[:, j] = 0.0
     util = acc - float(lam_cost) * cost
@@ -192,7 +210,7 @@ class Embedder:
 
 
 # ============================================================
-# Offline split 
+# Offline split
 # ============================================================
 def build_offline_partition_strict_only_per_model(
     util_train: np.ndarray,
@@ -206,7 +224,7 @@ def build_offline_partition_strict_only_per_model(
     - 중복 샘플링 금지
     - online = 나머지 전부
     """
-    U = np.asarray(util_train, dtype=np.float64)
+    U = np.asarray(util_train, dtype=np.float32)
     N, K = U.shape
     rng = np.random.RandomState(int(seed))
 
@@ -220,7 +238,6 @@ def build_offline_partition_strict_only_per_model(
     for k in range(K):
         pool = strict_idx[winners[strict_idx] == k]
         if pool.size == 0:
-            # strict winner가 아예 없으면 이 모델은 offline seed가 0개가 된다
             continue
         take = min(int(n_per_model), int(pool.size))
         chosen = rng.choice(pool, size=take, replace=False).astype(np.int64)
@@ -236,6 +253,7 @@ def build_offline_partition_strict_only_per_model(
     online_idx = np.setdiff1d(all_idx, offline_idx, assume_unique=False).astype(np.int64)
     return seed_idx, rand_idx, offline_idx, online_idx
 
+
 def build_offline_partition_mincover_then_random(
     util_train: np.ndarray,
     offline_total_ratio: float,
@@ -249,7 +267,7 @@ def build_offline_partition_mincover_then_random(
     - 먼저 각 모델 k의 strict winner pool에서 min_per_model개까지(부족하면 있는 것만) 확보
     - 남은 offline 자리는 전체에서 랜덤으로 채운다
     """
-    U = np.asarray(util_train, dtype=np.float64)
+    U = np.asarray(util_train, dtype=np.float32)
     N, K = U.shape
     rng = np.random.RandomState(int(seed) + 999)
 
@@ -280,7 +298,6 @@ def build_offline_partition_mincover_then_random(
 
     n_rand = int(offline_total - seed_idx.size)
     if n_rand > 0:
-        # remain이 부족하면 replace=True로 채우는 대신, 그냥 remain 전부만 쓰는 편이 더 “중복 없음” 정책에 맞다
         take = min(n_rand, int(remain.size))
         rand_idx = rng.choice(remain, size=take, replace=False).astype(np.int64)
     else:
@@ -291,7 +308,6 @@ def build_offline_partition_mincover_then_random(
 
     online_idx = np.setdiff1d(all_idx, offline_idx, assume_unique=False).astype(np.int64)
     return seed_idx, rand_idx, offline_idx, online_idx
-
 
 
 # ============================================================
@@ -334,16 +350,16 @@ def run_pipeline(
     config.d_ctx = d_ctx
     config.n_models = int(len(models))
 
-    lambdas = [float(x) for x in args.lam_list] if args.lam_list is not None else ([float(config.lam_cost)] if bool(config.use_cost) else [0.0])
+    lambdas = (
+        [float(x) for x in args.lam_list]
+        if args.lam_list is not None
+        else ([float(config.lam_cost)] if bool(config.use_cost) else [0.0])
+    )
 
+    # ---- run meta / config: 1회만 저장 ----
     cfg_full = _cfg_to_dict(config)
-    env_cfg = _filter_env_cfg(cfg_full)
-
-    _dump_json(output_dir / "run_args.json", vars(args))
     _dump_json(output_dir / "config_full.json", cfg_full)
-    _dump_json(output_dir / "env_cfg.json", env_cfg)
     _dump_json(output_dir / "models.json", list(models))
-    _dump_json(output_dir / "cost_map.json", {k: str(v) for k, v in cost_map.items()})
     _dump_json(
         output_dir / "run_meta.json",
         {
@@ -362,13 +378,7 @@ def run_pipeline(
     )
 
     btype = str(config.b_type).lower().strip()
-
-    # b_type==none이면 무조건 all
-    if btype == "none":
-        anchor_mode = "all"
-    else:
-        anchor_mode = str(getattr(config, "ak_anchor_mode", "sample")).lower().strip()
-
+    anchor_mode = "all" if btype == "none" else str(getattr(config, "ak_anchor_mode", "sample")).lower().strip()
 
     for lam in lambdas:
         lam = float(lam)
@@ -401,15 +411,19 @@ def run_pipeline(
         print(f"[Partition] offline={len(offline_idx)} (seed={len(seed_idx)}, rand={len(rand_idx)}) online={len(online_idx)}")
 
         # tie stats (전체 train 기준)
-        U = np.asarray(util_train, dtype=np.float64)
+        U = np.asarray(util_train, dtype=np.float32)
         mx = U.max(axis=1, keepdims=True)
         is_top = (U >= (mx - float(config.offline_tie_eps)))
         tie_size = is_top.sum(axis=1)
-        print(f"[Tie] strict_ratio(tie==1)={float((tie_size==1).mean()):.4f} tie_mean={float(tie_size.mean()):.3f} tie_max={int(tie_size.max())}")
+        strict_ratio = float((tie_size == 1).mean())
+        tie_mean = float(tie_size.mean())
+        tie_max = int(tie_size.max())
+        print(f"[Tie] strict_ratio(tie==1)={strict_ratio:.4f} tie_mean={tie_mean:.3f} tie_max={tie_max}")
 
         stream_idx = offline_idx if bool(args.use_offline_stream) else online_idx
+        stream_idx_np = np.asarray(stream_idx, dtype=np.int64)
 
-        # stats dump
+        # ---- partition 저장 (유지) ----
         np.savez(
             output_dir / f"partition_idx_lam_{lam:.4f}.npz",
             seed_idx=np.asarray(seed_idx, dtype=np.int64),
@@ -417,22 +431,6 @@ def run_pipeline(
             offline_idx=np.asarray(offline_idx, dtype=np.int64),
             online_idx=np.asarray(online_idx, dtype=np.int64),
             stream_idx=np.asarray(stream_idx, dtype=np.int64),
-        )
-        _dump_json(
-            output_dir / f"stats_lam_{lam:.4f}.json",
-            {
-                "lam_cost": float(lam),
-                "offline_total": int(len(np.asarray(offline_idx))),
-                "offline_seed": int(len(np.asarray(seed_idx))),
-                "offline_rand": int(len(np.asarray(rand_idx))),
-                "online": int(len(np.asarray(online_idx))),
-                "stream": int(len(np.asarray(stream_idx))),
-                "b_type": btype,
-                "supcon_pos_strategy": str(config.supcon_pos_strategy),
-                "strict_ratio_tie_eq_1": float((tie_size == 1).mean()),
-                "tie_mean": float(tie_size.mean()),
-                "tie_max": int(tie_size.max()),
-            },
         )
 
         # -------- Router init --------
@@ -447,10 +445,12 @@ def run_pipeline(
             device=str(config.device),
             b_type=str(config.b_type),
             b_hidden_mult=int(config.b_hidden_mult),
-            theta_solver="lbfgs",
+
+            # LBFGS params
             lbfgs_max_iter=int(config.lbfgs_max_iter),
             lbfgs_history_size=int(config.lbfgs_history_size),
             lbfgs_line_search=str(config.lbfgs_line_search),
+
             hist_init_capacity=int(config.hist_init_capacity),
             lr_b=float(config.offline_lr_B),
         ).to(device)
@@ -469,7 +469,7 @@ def run_pipeline(
         router.eval()
         with torch.no_grad():
             Z_off = (
-                router.B(torch.from_numpy(X_off).float().to(router.dev))
+                router.B(torch.from_numpy(X_off).to(device=router.dev, dtype=torch.float32))
                 .detach()
                 .cpu()
                 .numpy()
@@ -477,7 +477,7 @@ def run_pipeline(
             )
 
         anchors_by_k = select_anchors_by_model_upto_n(
-            util_mat=U_off,                          
+            util_mat=U_off,
             n_per_model=int(config.anchor_n_per_model),
             use_margin=False,
             seed=int(config.seed) + int(config.anchor_seed_offset),
@@ -485,7 +485,6 @@ def run_pipeline(
             tie_eps=float(config.offline_tie_eps),
             mode=anchor_mode,
         )
-
 
         empty = [k for k, idx in enumerate(anchors_by_k) if len(idx) == 0]
         if len(empty) > 0:
@@ -496,7 +495,6 @@ def run_pipeline(
 
         xi = compute_anchor_centroids(Z_off, anchors_by_k, normalize=bool(config.anchor_xi_normalize))
         S = compute_score_matrix(U_off, anchors_by_k)
-
         a_table = build_a_table_from_xi_S(
             xi=xi,
             S=S,
@@ -512,9 +510,28 @@ def run_pipeline(
         # -------- Online --------
         router.reset_for_online()
 
-        X_stream = X_train[np.asarray(stream_idx, dtype=np.int64)]
-        acc_stream = acc_train[np.asarray(stream_idx, dtype=np.int64)]
-        util_stream = util_train[np.asarray(stream_idx, dtype=np.int64)]
+        X_stream = X_train[stream_idx_np]
+        acc_stream = acc_train[stream_idx_np]
+        util_stream = util_train[stream_idx_np]
+
+        # ctx_idx -> df_train row/sample_id 매핑
+        row_ids_stream = None
+        if "orig_row" in df_train.columns:
+            row_ids_stream = df_train["orig_row"].to_numpy()[stream_idx_np]
+        else:
+            row_ids_stream = stream_idx_np.copy()
+
+        sample_ids_stream = None
+        if "sample_id" in df_train.columns:
+            sample_ids_stream = df_train["sample_id"].to_numpy()[stream_idx_np]
+
+        np.savez(
+            output_dir / f"stream_map_lam_{lam:.4f}.npz",
+            ctx_idx=np.arange(len(stream_idx_np), dtype=np.int64),
+            df_train_row=stream_idx_np.astype(np.int64),
+            orig_row=row_ids_stream.astype(np.int64) if row_ids_stream is not None else None,
+            sample_id=sample_ids_stream if sample_ids_stream is not None else None,
+        )
 
         router, avg_reg, Q_reg_T, reg_hist, Q_diff_hist, Q_r_hist, Q_o_hist, explore_rate = queue_env(
             X_ctx=X_stream,
@@ -523,27 +540,101 @@ def run_pipeline(
             config=config,
             router=router,
             model_names=models,
+            row_ids=row_ids_stream,
+            sample_ids=sample_ids_stream,
         )
 
-        pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.2f}.csv", index=False)
+        # ---- history 저장 (lam 포맷 통일: .4f) ----
+        pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.4f}.csv", index=False)
         pd.DataFrame({"Q_diff": Q_diff_hist, "Q_router": Q_r_hist, "Q_oracle": Q_o_hist}).to_csv(
-            output_dir / f"Qregret_history_lam_{lam:.2f}.csv", index=False
+            output_dir / f"Qregret_history_lam_{lam:.4f}.csv",
+            index=False,
         )
+
+        # ---- departure 로그 저장 (decision-only; queue 비면 기록 안 됨) ----
+        logs = getattr(router, "_queue_env_logs", None)
+        if isinstance(logs, dict):
+            # numpy로 변환해서 npz 저장
+            dep_prob_router = np.asarray(logs.get("dep_prob_router_hist", []), dtype=np.float32)
+            dep_evt_router = np.asarray(logs.get("dep_event_router_hist", []), dtype=np.float32)
+            dep_step_router = np.asarray(logs.get("dep_router_step_idx", []), dtype=np.int64)
+
+            dep_prob_oracle = np.asarray(logs.get("dep_prob_oracle_hist", []), dtype=np.float32)
+            dep_evt_oracle = np.asarray(logs.get("dep_event_oracle_hist", []), dtype=np.float32)
+            dep_step_oracle = np.asarray(logs.get("dep_oracle_step_idx", []), dtype=np.int64)
+
+            dep_prob_star = np.asarray(logs.get("dep_prob_star_hist", []), dtype=np.float32)
+            dep_step_star = np.asarray(logs.get("dep_star_step_idx", []), dtype=np.int64)
+
+            np.savez(
+                output_dir / f"departure_logs_lam_{lam:.4f}.npz",
+                dep_prob_router=dep_prob_router,
+                dep_event_router=dep_evt_router,
+                dep_step_router=dep_step_router,
+                dep_prob_oracle=dep_prob_oracle,
+                dep_event_oracle=dep_evt_oracle,
+                dep_step_oracle=dep_step_oracle,
+                dep_prob_star=dep_prob_star,
+                dep_step_star=dep_step_star,
+            )
+
+            # summary에 넣을 평균들
+            dep_router_mean = _safe_mean(dep_prob_router)
+            dep_router_tail = _safe_tail_mean(dep_prob_router, tail_frac=0.2)
+            dep_router_evt_mean = _safe_mean(dep_evt_router)
+
+            dep_oracle_mean = _safe_mean(dep_prob_oracle)
+            dep_oracle_evt_mean = _safe_mean(dep_evt_oracle)
+
+            dep_star_mean = _safe_mean(dep_prob_star)
+            dep_star_tail = _safe_tail_mean(dep_prob_star, tail_frac=0.2)
+
+            n_router_dec = int(dep_prob_router.size)
+            n_oracle_dec = int(dep_prob_oracle.size)
+            n_star_snap = int(dep_prob_star.size)
+        else:
+            dep_router_mean = dep_router_tail = dep_router_evt_mean = float("nan")
+            dep_oracle_mean = dep_oracle_evt_mean = float("nan")
+            dep_star_mean = dep_star_tail = float("nan")
+            n_router_dec = n_oracle_dec = n_star_snap = 0
 
         summary = {
             "lam_cost": float(lam),
             "avg_regret": float(avg_reg),
             "final_Q_gap": float(Q_reg_T),
+
             "n_train": int(df_train.shape[0]),
             "n_stream": int(len(np.asarray(stream_idx))),
             "use_offline_stream": bool(args.use_offline_stream),
+
             "offline_total": int(len(np.asarray(offline_idx))),
             "offline_seed": int(len(np.asarray(seed_idx))),
             "offline_rand": int(len(np.asarray(rand_idx))),
+
             "b_type": str(config.b_type),
             "supcon_pos_strategy": str(config.supcon_pos_strategy),
+
+            "tie_strict_ratio": float(strict_ratio),
+            "tie_mean": float(tie_mean),
+            "tie_max": int(tie_max),
+
             "explore_rate": float(explore_rate),
             "cnt_decision": int(getattr(router, "_T", 0)),
+
+            # ---- departure summary (decision-only 평균; queue 비면 제외) ----
+            "dep_router_mean": float(dep_router_mean),             # E[dep] 평균 (Router)
+            "dep_router_tail20_mean": float(dep_router_tail),      # 마지막 20% 평균 (Router)
+            "dep_router_event_mean": float(dep_router_evt_mean),   # departed(0/1) 평균 (Router)
+
+            "dep_oracle_mean": float(dep_oracle_mean),             # oracle(queue progression) E[dep]
+            "dep_oracle_event_mean": float(dep_oracle_evt_mean),   # oracle departed(0/1)
+
+            "dep_star_mean": float(dep_star_mean),                 # oracle@queue-max E[dep*]
+            "dep_star_tail20_mean": float(dep_star_tail),
+
+            "n_router_decisions_logged": int(n_router_dec),
+            "n_oracle_decisions_logged": int(n_oracle_dec),
+            "n_star_snapshots_logged": int(n_star_snap),
         }
 
         (output_dir / f"summary_lam_{lam:.4f}.json").write_text(
@@ -551,4 +642,4 @@ def run_pipeline(
             encoding="utf-8",
         )
 
-        print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_reg_T:.3f}")
+        print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_reg_T:.3f} dep_mean={dep_router_mean:.6f}")

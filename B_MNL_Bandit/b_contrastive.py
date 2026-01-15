@@ -13,17 +13,17 @@ def supcon_loss_posmask(
     temperature: float,
 ) -> torch.Tensor:
     """
-    features: (B,d)
+    features: (B,d) float32 권장
     pos_mask: (B,B) float/bool (diagonal ignored)
     """
     B = int(features.shape[0])
     if B < 2:
-        return torch.tensor(0.0, device=features.device)
+        return torch.tensor(0.0, device=features.device, dtype=features.dtype)
 
     feats = F.normalize(features, dim=-1)
-    pm = pos_mask.to(features.device).float()
+    pm = pos_mask.to(device=features.device, dtype=features.dtype)
 
-    eye = torch.eye(B, device=features.device)
+    eye = torch.eye(B, device=features.device, dtype=features.dtype)
     pm = pm * (1.0 - eye)
 
     sim = (feats @ feats.T) / float(temperature)   # (B,B)
@@ -48,9 +48,9 @@ def build_pos_mask_adaptive_topk(
 ) -> torch.Tensor:
     """
     util_batch: (B,K_data) -> (B,n_models)로 pad/trim
-    return pos_weight: (B,B)
+    return pos_weight: (B,B)  (util_batch dtype 유지)
     """
-    ub = util_batch.to(util_batch.device)
+    ub = util_batch
     B, K = ub.shape
 
     if K != n_models:
@@ -76,10 +76,10 @@ def build_pos_mask_adaptive_topk(
         delta_eff = max(float(delta), 1e-6)
         w = ((top_vals - (top1 - delta_eff)) / delta_eff).clamp(0.0, 1.0)
         w[:, 0] = 1.0
-        w = w * keep.float()
+        w = w * keep.to(dtype=ub.dtype)
         w = w / w.sum(dim=1, keepdim=True).clamp_min(1e-12)
 
-        membership = torch.zeros((B, K), device=ub.device, dtype=torch.float32)
+        membership = torch.zeros((B, K), device=ub.device, dtype=ub.dtype)
         membership.scatter_(1, top_idx, w)
 
         pos_weight = membership @ membership.T
@@ -100,10 +100,10 @@ def build_pos_mask_adaptive_topk(
     ar = torch.arange(max_k, device=ub.device).unsqueeze(0)
     keep = (ar < k_i.unsqueeze(1))
 
-    w = p * keep.float()
+    w = p * keep.to(dtype=ub.dtype)
     w = w / w.sum(dim=1, keepdim=True).clamp_min(1e-12)
 
-    membership = torch.zeros((B, K), device=ub.device, dtype=torch.float32)
+    membership = torch.zeros((B, K), device=ub.device, dtype=ub.dtype)
     membership.scatter_(1, top_idx, w)
 
     pos_weight = membership @ membership.T
@@ -120,10 +120,10 @@ def _tie_break_winners_from_util(
     util_np: (N,K)
     max 동점이면 co-first 집합에서 랜덤하게 winner를 하나 뽑는다.
     """
-    U = np.asarray(util_np, dtype=np.float64)
+    U = np.asarray(util_np, dtype=np.float32)
     N, K = U.shape
     mx = U.max(axis=1, keepdims=True)
-    co = U >= (mx - float(tie_eps))  # (N,K) bool
+    co = U >= (mx - float(tie_eps))  # (N,K)
     winners = np.empty((N,), dtype=np.int64)
     for i in range(N):
         cand = np.where(co[i])[0]
@@ -183,12 +183,6 @@ def offline_pretrain_B_supcon(
     n_models: int,
     cfg: QueueConfig,
 ):
-    """
-    SupCon 관련 필드:
-      - supcon_temp, supcon_bs, offline_epochs, offline_lr_B, supcon_grad_clip
-      - supcon_pos_strategy, supcon_topk_*
-      - balance_min_classes, balance_per_class
-    """
     if getattr(router, "b_type", "").lower().strip() == "none":
         print("[Offline] skipped (b_type=none)")
         return
@@ -201,16 +195,16 @@ def offline_pretrain_B_supcon(
     router.unfreeze_B(lr_b=float(cfg.offline_lr_B))
     rng = np.random.RandomState(int(cfg.seed) + 2024)
 
-    X_t = torch.from_numpy(X_ctx_off).float().to(router.dev)
-    U_t = torch.from_numpy(util_off).float().to(router.dev)
+    # float32 end-to-end
+    X_t = torch.from_numpy(np.asarray(X_ctx_off)).to(device=router.dev, dtype=torch.float32)
+    U_t = torch.from_numpy(np.asarray(util_off)).to(device=router.dev, dtype=torch.float32)
 
     pos_strategy = str(cfg.supcon_pos_strategy).lower().strip()
 
-    # balanced batch를 위한 winner 라벨
+    # balanced batch winner labels
     if pos_strategy == "top1":
         winners_np = np.argmax(util_off, axis=1).astype(np.int64)
     else:
-        # 공동1등 포함 시 tie-break winner로 클래스 분포를 너무 찌그러뜨리지 않게 한다
         winners_np = _tie_break_winners_from_util(
             util_np=util_off,
             rng=rng,
@@ -237,8 +231,8 @@ def offline_pretrain_B_supcon(
         )
         b_idx = torch.as_tensor(b_idx_np, device=router.dev, dtype=torch.long)
 
-        xb = X_t[b_idx]  # (bs,d_ctx)
-        ub = U_t[b_idx]  # (bs,n_models)
+        xb = X_t[b_idx]  # (bs,d_ctx) float32
+        ub = U_t[b_idx]  # (bs,n_models) float32
 
         router.train()
         if router.opt_b is None:
@@ -246,11 +240,11 @@ def offline_pretrain_B_supcon(
 
         router.opt_b.zero_grad(set_to_none=True)
 
-        z = router.forward_ctx_supcon(xb)  # (bs,d_proj)
+        z = router.forward_ctx_supcon(xb)  # (bs,d_proj) float32
 
         if pos_strategy == "top1":
             y = ub.argmax(dim=1)
-            pos_mask = (y.unsqueeze(1) == y.unsqueeze(0)).float()
+            pos_mask = (y.unsqueeze(1) == y.unsqueeze(0)).to(dtype=torch.float32)
             pos_mask.fill_diagonal_(0.0)
 
         elif pos_strategy == "topr_mass":
@@ -287,7 +281,7 @@ def offline_pretrain_B_supcon(
 
         if (ep % 50 == 0) or (ep == 1) or (ep == int(cfg.offline_epochs)):
             with torch.no_grad():
-                avg_pos = float((pos_mask > 0).float().sum(dim=1).mean().item())
+                avg_pos = float((pos_mask > 0).to(dtype=torch.float32).sum(dim=1).mean().item())
             print(f"[Offline] epoch={ep:5d} | supcon_loss={float(loss.item()):.4f} | avg_pos={avg_pos:.1f}")
 
     router.freeze_B()

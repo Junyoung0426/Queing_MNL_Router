@@ -180,13 +180,13 @@ def sample_pairs_cos(Z: np.ndarray, max_pairs: int, seed: int) -> np.ndarray:
     rng = np.random.RandomState(seed)
     N = Z.shape[0]
     if N < 2:
-        return np.zeros((0,), dtype=np.float64)
+        return np.zeros((0,), dtype=np.float32)
     P = min(int(max_pairs), N * (N - 1) // 2)
     i = rng.randint(0, N, size=P)
     j = rng.randint(0, N, size=P)
     mask = i != j
     i, j = i[mask], j[mask]
-    return np.sum(Z[i] * Z[j], axis=1).astype(np.float64)
+    return np.sum(Z[i] * Z[j], axis=1).astype(np.float32)
 
 
 @torch.no_grad()

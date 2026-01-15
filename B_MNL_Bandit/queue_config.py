@@ -10,7 +10,7 @@ class QueueConfig:
     # Logging / Seed
     # -----------------------------
     seed: int = 42
-    log_every: int = 1000
+    log_every: int = 100
     debug_verbose: bool = True
     debug_topk: int = 3
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -22,37 +22,43 @@ class QueueConfig:
     test_size: float = 0.2
 
     use_cost: bool = True
-    lam_cost: float = 50.0
+    lam_cost: float = 5.0
 
     d_ctx: Optional[int] = None
     n_models: Optional[int] = None
-    
+
     combine_mode: str = "mul"   # "mul" or "add"
+    explore_enabled: bool = True
 
     # -----------------------------
     # Queue / Bandit (Online)
     # -----------------------------
     assort_K: int = 2
-    arrival_rate: float = 0.9
+    arrival_rate: float = 0.6
     max_steps: int = 200_000
 
     # util -> r -> odds
     r_eps: float = 1e-6
-    r_lo: float = 0.01
+    r_lo: float = 0.1
     r_hi: float = 0.99
 
     # unknown horizon schedule
     kappa: float = 4.0
     c1: float = 50.0
 
-    # ridge for theta + initial V_inv scale
+    # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
-    alpha_coef: float = 0.01
+    alpha_coef: float = 0.1
 
-    # Online LBFGS
+    # theta solver (full-history)
+    theta_solver: str = "lbfgs"  #  "lbfgs"
+
     lbfgs_max_iter: int = 50
     lbfgs_history_size: int = 50
     lbfgs_line_search: str = "strong_wolfe"
+
+
+    # history buffer capacity (z_S, y) full-history
     hist_init_capacity: int = 2048
 
     # -----------------------------
@@ -79,9 +85,9 @@ class QueueConfig:
     supcon_grad_clip: float = 1.0
 
     # positives selection: "top1" / "topr_mass"
-    supcon_pos_strategy: str = "top1"
-    supcon_topk_max_k: int = 3
-    supcon_topk_q: float = 0.8
+    supcon_pos_strategy: str = "topr_mass"
+    supcon_topk_max_k: int = 100
+    supcon_topk_q: float = 1
     supcon_topk_beta: float = 5.0
     supcon_topk_delta: float = 1.0
 
@@ -92,10 +98,7 @@ class QueueConfig:
     # -----------------------------
     # a_table (LLM embedding table)
     # -----------------------------
-    # b_type=="none"이면 train.py에서 anchor_mode="all" 강제
-    # b_type!="none"이면 ak_anchor_mode로 all/sample 선택
     ak_anchor_mode: str = "all"   # "all" or "sample"
-
     anchor_n_per_model: int = 10
     anchor_seed_offset: int = 777
     anchor_xi_normalize: bool = False

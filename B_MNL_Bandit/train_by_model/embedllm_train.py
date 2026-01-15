@@ -107,7 +107,6 @@ def load_embedllm_hf_csv_pivot(
             "sample_id": pid,
             "prompt": rec["prompt"],
             "eval_name": "embedllm",
-            "oracle_model_to_route_to": "",
         }
         for m in models:
             row[m] = float(labels[m])

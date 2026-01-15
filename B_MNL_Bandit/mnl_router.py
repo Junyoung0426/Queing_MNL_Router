@@ -11,18 +11,14 @@ import torch.nn.functional as F
 
 class MNLRouter(nn.Module):
     """
-    Router (query-only input) + model embedding table a_k.
+    Online MNL Router using Sherman–Morrison updates.
 
-    - Input at decision time: x_ctx only (no model idx appended)
-    - Internally uses:
-        z_ctx = B(x_ctx)                              (d_proj)
-        a_k   = a_table[k]                            (d_proj)
-        z_{k} = z_ctx ⊙ a_k                           (d_proj)
-        u_k   = z_k^T theta                           (scalar, log-odds scale)
+      - theta: full-history MLE + ridge via L-BFGS (float32)
+      - V_inv: approximate covariance inverse, updated via Sherman–Morrison (float32)
+      - TS sampling: Cholesky of V_inv with jitter + eig fallback (float32)
 
-    Online:
-      - theta only (full-history MLE + ridge via LBFGS)
-      - V_inv Sherman–Morrison
+    Notes:
+      - V_inv may drift from SPD due to numerical errors. Optional SPD projection helps.
     """
 
     def __init__(
@@ -30,15 +26,14 @@ class MNLRouter(nn.Module):
         d_ctx: int,
         n_models: int,
         d_proj: int,
-        combine_mode : str,
+        combine_mode: str,
         lambda_0: float = 1.0,
         supcon_temp: float = 0.07,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         b_type: str = "linear",
         b_hidden_mult: int = 2,
-        theta_solver: str = "lbfgs",
-        lbfgs_max_iter: int = 40,
-        lbfgs_history_size: int = 20,
+        lbfgs_max_iter: int = 80,
+        lbfgs_history_size: int = 50,
         lbfgs_line_search: str = "strong_wolfe",
         hist_init_capacity: int = 2048,
         lr_b: float = 1e-3,
@@ -53,14 +48,13 @@ class MNLRouter(nn.Module):
             raise ValueError(f"b_type must be one of ['linear','mlp','none'], got {b_type}")
         self.b_type = b_type
 
-        # effective projection dim
         if self.b_type == "none":
             d_proj_eff = self.d_ctx
         else:
             d_proj_eff = int(d_proj)
 
         self.d_proj = int(d_proj_eff)
-        self.d_final_feature = self.d_proj
+        self.d_final_feature = int(d_proj_eff)
         self.d = self.d_final_feature
 
         cm = str(combine_mode).lower().strip()
@@ -69,17 +63,24 @@ class MNLRouter(nn.Module):
         self.combine_mode = cm
 
         self.lambda_0 = float(lambda_0)
+        if self.lambda_0 <= 0.0:
+            raise ValueError("lambda_0 must be > 0 for SPD initialization.")
         self.supcon_temp = float(supcon_temp)
         self.lr_b_default = float(lr_b)
 
+        self.lbfgs_max_iter = int(lbfgs_max_iter)
+        self.lbfgs_history_size = int(lbfgs_history_size)
+        self.lbfgs_line_search = lbfgs_line_search
+
+
         init_dev = torch.device(device)
 
-        # a_table: (n_models, d)
+        # a_table: (n_models, d) float32
         A0 = torch.zeros((self.n_models, self.d_final_feature), device=init_dev, dtype=torch.float32)
         self.register_buffer("a_table", A0)
         self._ak_ready = False
 
-        # B projection
+        # B projection (float32)
         if self.b_type == "none":
             self.B = nn.Identity()
         elif self.b_type == "linear":
@@ -96,80 +97,77 @@ class MNLRouter(nn.Module):
             self.B = nn.Identity()
 
         self.to(init_dev)
+        self.B = self.B.to(dtype=torch.float32)
 
-        # theta (float32) / V_inv (float64)
+        # theta: float32
         self.theta = nn.Parameter(torch.zeros(self.d_final_feature, device=init_dev, dtype=torch.float32))
-        self.register_buffer(
-            "V_inv",
-            (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=init_dev, dtype=torch.float64),
-        )
 
-        self.opt_b: Optional[torch.optim.Optimizer] = None
+        # V_inv: float32, initial V = lambda_0 I -> V_inv = (1/lambda_0) I
+        V_inv_0 = (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=init_dev, dtype=torch.float32)
+        self.register_buffer("V_inv", V_inv_0)
 
-        self.theta_solver = str(theta_solver).lower().strip()
-        self.lbfgs_max_iter = int(lbfgs_max_iter)
-        self.lbfgs_history_size = int(lbfgs_history_size)
-        self.lbfgs_line_search = lbfgs_line_search
-
-        # history buffer (stores per-step chosen-assortment features z_S and label y)
+        # history buffers
         self._K: Optional[int] = None
         self._T: int = 0
         self._cap: int = int(hist_init_capacity)
-        self._Z_hist: Optional[torch.Tensor] = None   # (cap, K, d)
-        self._y_hist: Optional[torch.Tensor] = None   # (cap,)
+        self._Z_hist: Optional[torch.Tensor] = None  # (cap, K, d) float32
+        self._y_hist: Optional[torch.Tensor] = None  # (cap,) long
 
-        # default: freeze B
+        # diagnostics (TS 안정성 모니터링)
+        self._ts_chol_fail_count: int = 0
+        self._ts_last_jitter: float = 0.0
+
+        self.opt_b: Optional[torch.optim.Optimizer] = None
         self.freeze_B()
 
     @property
     def dev(self) -> torch.device:
         return self.theta.device
 
-    @staticmethod
-    def _clip_norm(x: torch.Tensor) -> torch.Tensor:
-        norm = torch.linalg.norm(x, dim=-1, keepdim=True)
-        scale = norm.clamp_min(1.0)
-        return x / scale
+    # --------- diagnostics getters ---------
+    @property
+    def ts_chol_fail_count(self) -> int:
+        return int(self._ts_chol_fail_count)
+
+    @property
+    def ts_last_jitter(self) -> float:
+        return float(self._ts_last_jitter)
 
     # ---------- a_table ----------
     @torch.no_grad()
     def set_a_table(self, A: torch.Tensor, normalize: bool = True):
-        A = A.to(self.a_table.device).float()
+        A = A.to(device=self.a_table.device, dtype=torch.float32)
         if normalize:
             A = F.normalize(A, dim=-1)
         self.a_table.copy_(A)
         self._ak_ready = True
 
-    # ---------- projection / feature construction ----------
+    # ---------- projection / features ----------
     def B_projection(self, x_ctx: torch.Tensor) -> torch.Tensor:
-        """
-        x_ctx: (d_ctx,) or (B, d_ctx)
-        return z_ctx: (d,) or (B, d)
-        """
-        x_ctx = x_ctx.to(self.dev)
+        x_ctx = x_ctx.to(device=self.dev, dtype=torch.float32)
         return self.B(x_ctx)
 
     def z_for_S(self, z_ctx: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
         if not self._ak_ready:
             raise RuntimeError("a_table not set. Call set_a_table(A) before routing.")
 
+        z_ctx = z_ctx.to(device=self.dev, dtype=torch.float32)
         S = S.to(self.dev).long().clamp(0, self.n_models - 1)
-        a_S = self.a_table[S]  # (K,d) or (B,K,d)
+        a_S = self.a_table[S]  # float32
 
         if self.combine_mode == "mul":
             if z_ctx.dim() == 1:
-                return a_S * z_ctx.unsqueeze(0)         # (K,d)
+                return a_S * z_ctx.unsqueeze(0)               # (K,d)
             if a_S.dim() == 2:
                 return z_ctx.unsqueeze(1) * a_S.unsqueeze(0)  # (B,K,d)
-            return z_ctx.unsqueeze(1) * a_S
+            return z_ctx.unsqueeze(1) * a_S                   # (B,K,d)
 
         # add
         if z_ctx.dim() == 1:
-            return a_S + z_ctx.unsqueeze(0)             # (K,d)
+            return a_S + z_ctx.unsqueeze(0)                   # (K,d)
         if a_S.dim() == 2:
             return z_ctx.unsqueeze(1) + a_S.unsqueeze(0)      # (B,K,d)
-        return z_ctx.unsqueeze(1) + a_S
-
+        return z_ctx.unsqueeze(1) + a_S                       # (B,K,d)
 
     def z_for_S_from_ctx(self, x_ctx: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
         z_ctx = self.B_projection(x_ctx)
@@ -177,22 +175,22 @@ class MNLRouter(nn.Module):
 
     # ---------- scoring ----------
     def scores_for_S_from_z(self, z_S: torch.Tensor) -> torch.Tensor:
-        z_S = z_S.to(self.dev)
+        z_S = z_S.to(device=self.dev, dtype=torch.float32)
         if z_S.dim() == 2:
             return z_S @ self.theta
         if z_S.dim() == 3:
             return torch.einsum("bkd,d->bk", z_S, self.theta)
+        raise ValueError(f"z_S dim must be 2 or 3, got {z_S.dim()}")
 
     def logits_all_models(self, x_ctx: torch.Tensor) -> torch.Tensor:
-        z_ctx = self.B_projection(x_ctx)  # (d) or (B,d)
+        z_ctx = self.B_projection(x_ctx)  # float32
 
         if self.combine_mode == "mul":
             z_theta = z_ctx * self.theta
             if z_theta.dim() == 1:
                 return z_theta.unsqueeze(0) @ self.a_table.T  # (1,N)
             return z_theta @ self.a_table.T                   # (B,N)
-        # add
-        # u_k = z_ctx^T theta + a_k^T theta
+
         a_theta = (self.a_table @ self.theta)                 # (N,)
         if z_ctx.dim() == 1:
             base = torch.dot(z_ctx, self.theta)               # ()
@@ -200,48 +198,62 @@ class MNLRouter(nn.Module):
         base = z_ctx @ self.theta                             # (B,)
         return base.unsqueeze(1) + a_theta.unsqueeze(0)       # (B,N)
 
+
+
+
     # ---------- TS noise ----------
+    @torch.no_grad()
     def sample_theta_noise(self, alpha_t: float, M: int = 4) -> torch.Tensor:
-        d_feat = self.d_final_feature
-        with torch.no_grad():
-            V = 0.5 * (self.V_inv
-                       + self.V_inv.T)  # float64
-            eye = torch.eye(d_feat, device=self.dev, dtype=torch.float64)
+        """
+        noise ~ N(0, alpha^2 * V_inv).
+        L L^T = V_inv, noise = alpha * (L @ u), u~N(0,I).
+        """
+        d_feat = int(self.d_final_feature)
 
-            jitter = 1e-12
-            L = None
-            for _ in range(8):
-                L_try, info = torch.linalg.cholesky_ex(V + jitter * eye)
-                if int(info) == 0:
-                    L = L_try
-                    break
-                jitter *= 10.0
+        V = 0.5 * (self.V_inv + self.V_inv.T)
+        eye = torch.eye(d_feat, device=self.dev, dtype=torch.float32)
 
-            if L is None:
-                e, v = torch.linalg.eigh(V + jitter * eye)
-                e = e.clamp_min(jitter)
-                V_spd = (v * e) @ v.T
-                L = torch.linalg.cholesky(V_spd)
+        jitter = 1e-12
+        L = None
+        for _ in range(8):
+            L_try, info = torch.linalg.cholesky_ex(V + jitter * eye)
+            if int(info) == 0:
+                L = L_try
+                break
+            jitter *= 10.0
 
-            u = torch.randn(d_feat, M, device=self.dev, dtype=torch.float64)
-            noise = float(alpha_t) * (L @ u)  # float64
-            return noise.to(dtype=torch.float32)
+        if L is None:
+            # 기록 남김
+            self._ts_chol_fail_count += 1
+            self._ts_last_jitter = float(jitter)
 
+            e, Q = torch.linalg.eigh(V + jitter * eye)
+            e = e.clamp_min(jitter)
+            V_spd = (Q * e) @ Q.T
+            L = torch.linalg.cholesky(V_spd)
+        else:
+            self._ts_last_jitter = float(jitter)
+
+        u = torch.randn(d_feat, M, device=self.dev, dtype=torch.float32)
+        return float(alpha_t) * (L @ u)  # (d,M) float32
+
+    @torch.no_grad()
     def sample_optimistic_reward_from_zS(self, z_S_batch: torch.Tensor, noise_vectors: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            z = z_S_batch.to(self.dev)                               # (B,K,d)
-            mean = torch.einsum("bkd,d->bk", z, self.theta)          # (B,K)
-            unc = torch.einsum("bkd,dm->bkm", z, noise_vectors)      # (B,K,M)
-            u_samp = mean.unsqueeze(-1) + unc                        # (B,K,M)
-            u_optim = u_samp.max(dim=2).values                       # (B,K)
-            lse = torch.logsumexp(u_optim, dim=1)                    # (B,)
-            return torch.sigmoid(lse)                                # (B,)
+        z = z_S_batch.to(device=self.dev, dtype=torch.float32)       # (B,K,d)
+        nv = noise_vectors.to(device=self.dev, dtype=torch.float32)  # (d,M)
+
+        mean = torch.einsum("bkd,d->bk", z, self.theta)              # (B,K)
+        unc = torch.einsum("bkd,dm->bkm", z, nv)                     # (B,K,M)
+        u_samp = mean.unsqueeze(-1) + unc                            # (B,K,M)
+        u_optim = u_samp.max(dim=2).values                           # (B,K)
+        lse = torch.logsumexp(u_optim, dim=1)                        # (B,)
+        return torch.sigmoid(lse)                                    # (B,) float32
 
     # ---------- SupCon (B only) ----------
     def forward_ctx_supcon(self, x_ctx: torch.Tensor) -> torch.Tensor:
         if x_ctx.dim() == 1:
             x_ctx = x_ctx.unsqueeze(0)
-        x_ctx = x_ctx.to(self.dev)
+        x_ctx = x_ctx.to(device=self.dev, dtype=torch.float32)
         return self.B(x_ctx)
 
     def unfreeze_B(self, lr_b: Optional[float] = None):
@@ -255,8 +267,7 @@ class MNLRouter(nn.Module):
         self.opt_b = torch.optim.Adam(params, lr=lr_use)
 
     def freeze_B(self):
-        params = list(self.B.parameters())
-        for p in params:
+        for p in self.B.parameters():
             p.requires_grad = False
         self.opt_b = None
 
@@ -267,9 +278,11 @@ class MNLRouter(nn.Module):
         with torch.no_grad():
             self.theta.zero_()
             self.V_inv.copy_(
-                (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=self.dev, dtype=torch.float64)
+                (1.0 / self.lambda_0) * torch.eye(self.d_final_feature, device=self.dev, dtype=torch.float32)
             )
         self._reset_history()
+        self._ts_chol_fail_count = 0
+        self._ts_last_jitter = 0.0
 
     def _reset_history(self):
         self._K = None
@@ -277,7 +290,7 @@ class MNLRouter(nn.Module):
         self._Z_hist = None
         self._y_hist = None
 
-    # ---------- online MLE (full-history) ----------
+    # ---------- history ----------
     def _ensure_capacity(self, need_T: int):
         if self._Z_hist is None or self._y_hist is None:
             return
@@ -314,18 +327,36 @@ class MNLRouter(nn.Module):
             self._y_hist = torch.empty((self._cap,), device=self.dev, dtype=torch.long)
             self._T = 0
 
-    def _objective_vectorized(self, Z_batch: torch.Tensor, y_batch: torch.Tensor) -> torch.Tensor:
-        """
-        Z_batch: (T, K, d)
-        y_batch: (T,) with classes in {0..K}, where 0 means outside option
-        """
-        T = Z_batch.shape[0]
-        logits = torch.einsum("tkd,d->tk", Z_batch, self.theta)                 # (T,K)
-        zero_col = torch.zeros((T, 1), device=self.dev, dtype=logits.dtype)    # outside logit=0
-        full_logits = torch.cat([zero_col, logits], dim=1)                     # (T,K+1)
+    # ---------- objective ----------
+    def _objective_vectorized_ce(self, Z_batch: torch.Tensor, y_batch: torch.Tensor) -> torch.Tensor:
+        T = int(Z_batch.shape[0])
+        logits = torch.einsum("tkd,d->tk", Z_batch, self.theta)               # (T,K)
+        zero_col = torch.zeros((T, 1), device=self.dev, dtype=torch.float32)  # outside logit=0
+        full_logits = torch.cat([zero_col, logits], dim=1)                   # (T,K+1)
         nll = F.cross_entropy(full_logits, y_batch, reduction="sum")
-        ridge = 0.5 * float(self.lambda_0) * torch.sum(self.theta * self.theta)
+        ridge = 0.5 * float(self.lambda_0) * torch.dot(self.theta, self.theta)
         return nll + ridge
+
+    # ---------- solver ----------
+    def _solve_theta_lbfgs(self, Z_batch: torch.Tensor, y_batch: torch.Tensor) -> float:
+        opt = torch.optim.LBFGS(
+            [self.theta],
+            lr=0.5,
+            max_iter=self.lbfgs_max_iter,
+            history_size=self.lbfgs_history_size,
+            line_search_fn=self.lbfgs_line_search,
+            tolerance_grad=1e-12,
+            tolerance_change=1e-15,
+        )
+
+        def closure():
+            opt.zero_grad(set_to_none=True)
+            loss = self._objective_vectorized_ce(Z_batch, y_batch)
+            loss.backward()
+            return loss
+
+        loss = opt.step(closure)
+        return float(loss.item()) if hasattr(loss, "item") else float(loss)
 
     def _solve_theta_minimize(self) -> float:
         if self._T == 0:
@@ -333,39 +364,25 @@ class MNLRouter(nn.Module):
         assert self._Z_hist is not None and self._y_hist is not None
         Z_batch = self._Z_hist[: self._T]
         y_batch = self._y_hist[: self._T]
+        return self._solve_theta_lbfgs(Z_batch, y_batch)
 
-        opt = torch.optim.LBFGS(
-            [self.theta],
-            lr=0.05,
-            max_iter=self.lbfgs_max_iter,
-            history_size=self.lbfgs_history_size,
-            line_search_fn=self.lbfgs_line_search,
-        )
-
-        def closure():
-            opt.zero_grad(set_to_none=True)
-            loss = self._objective_vectorized(Z_batch, y_batch)
-            loss.backward()
-            return loss
-
-        loss = opt.step(closure)
-        return float(loss.item()) if hasattr(loss, "item") else float(loss)
-
+    # ---------- updates ----------
     def update_from_zS(self, z_S: torch.Tensor, y_vec: torch.Tensor) -> Tuple[float, float]:
         """
-        z_S: (K, d) - 선택된 Assortment의 특징 벡터들
-        y_vec: (K+1,) - One-hot reward vector (0번 인덱스: Outside Option)
+        z_S: (K, d) float32
+        y_vec: (K+1,) one-hot, index 0 is outside option
         """
         self.eval()
-        z_S = z_S.to(self.dev).contiguous()
-        y_vec = y_vec.to(self.dev).view(-1) # (K+1,)
+
+        z_S = z_S.to(device=self.dev, dtype=torch.float32).contiguous()
+        y_vec = y_vec.to(device=self.dev, dtype=torch.float32).view(-1)
 
         if z_S.dim() != 2:
             raise ValueError(f"z_S shape mismatch: expected (K,d), got {tuple(z_S.shape)}")
 
-        K = z_S.shape[0]
-        # (0: Outside, 1~K: Items)
-        target_idx = torch.argmax(y_vec) 
+        K = int(z_S.shape[0])
+        target_idx = torch.argmax(y_vec).long()
+
         self._init_history_if_needed(K)
         self._ensure_capacity(self._T + 1)
 
@@ -374,26 +391,37 @@ class MNLRouter(nn.Module):
         self._y_hist[self._T] = target_idx
         self._T += 1
 
+        # 1) theta update
         loss_total = self._solve_theta_minimize()
 
-        # Sherman-Morrison Update 
+        # 2) V_inv update via Sherman–Morrison
         with torch.no_grad():
-            for j in range(K):
-                z = z_S[j].to(dtype=torch.float64)
-                v = self.V_inv @ z
-                denom = 1.0 + (z @ v)
-                if (not torch.isfinite(denom)) or (denom <= 1e-12):
-                    denom = torch.tensor(1e-12, device=self.dev, dtype=torch.float64)
+            for i in range(K):
+                z = z_S[i]                    # (d,)
+                v = self.V_inv @ z            # (d,)
+                denom = 1.0 + (z @ v)         # scalar tensor
+
+                denom = torch.nan_to_num(denom, nan=1e-12, posinf=1e12, neginf=1e-12)
+                denom = denom.clamp_min(1e-12)
+
                 self.V_inv -= torch.outer(v, v) / denom
+
+            # symmetry projection (cheap)
             self.V_inv.copy_(0.5 * (self.V_inv + self.V_inv.T))
-            self.V_inv.diagonal().add_(1e-12)
+
         return float(loss_total), 0.0
 
-    def update_from_ctx(self, x_ctx: Union[np.ndarray, torch.Tensor], S: List[int], y_vec: torch.Tensor) -> Tuple[float, float]:
+    def update_from_ctx(
+        self,
+        x_ctx: Union[np.ndarray, torch.Tensor],
+        S: List[int],
+        y_vec: torch.Tensor,
+    ) -> Tuple[float, float]:
         if isinstance(x_ctx, np.ndarray):
-            x_ctx_t = torch.from_numpy(x_ctx).float().to(self.dev)
+            x_ctx_t = torch.from_numpy(x_ctx).to(device=self.dev, dtype=torch.float32)
         else:
-            x_ctx_t = x_ctx.to(self.dev).float()
+            x_ctx_t = x_ctx.to(device=self.dev, dtype=torch.float32)
+
         S_t = torch.tensor(S, device=self.dev, dtype=torch.long)
         z_S = self.z_for_S_from_ctx(x_ctx_t, S_t)  # (K,d)
         return self.update_from_zS(z_S, y_vec)
