@@ -545,9 +545,9 @@ def run_pipeline(
         )
 
         # ---- history 저장 (lam 포맷 통일: .4f) ----
-        pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.4f}.csv", index=False)
+        pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.2f}.csv", index=False)
         pd.DataFrame({"Q_diff": Q_diff_hist, "Q_router": Q_r_hist, "Q_oracle": Q_o_hist}).to_csv(
-            output_dir / f"Qregret_history_lam_{lam:.4f}.csv",
+            output_dir / f"Qregret_history_lam_{lam:.2f}.csv",
             index=False,
         )
 
