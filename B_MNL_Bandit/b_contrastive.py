@@ -90,7 +90,15 @@ def build_pos_mask_adaptive_topk(
     v = top_vals - top_vals.max(dim=1, keepdim=True).values
     p = torch.softmax(float(beta) * v, dim=1)
 
-    c = torch.cumsum(p, dim=1)
+    # 기존
+    # c = torch.cumsum(p, dim=1)
+
+    # 수정 (CUDA deterministic 우회)
+    if p.is_cuda and torch.are_deterministic_algorithms_enabled():
+        c = torch.cumsum(p.detach().cpu(), dim=1).to(p.device)
+    else:
+        c = torch.cumsum(p, dim=1)
+
     cond = (c >= float(q))
     any_true = cond.any(dim=1)
     first = cond.int().argmax(dim=1)
