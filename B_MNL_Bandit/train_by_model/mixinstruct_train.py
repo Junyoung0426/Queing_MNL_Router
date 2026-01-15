@@ -1,22 +1,20 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
-from typing import Dict, List, Tuple, Optional, Any
-
-import numpy as np
-import pandas as pd
+import os
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import sys
-import os
-
+import argparse
+import numpy as np
+import pandas as pd
+from typing import Tuple, List, Dict, Optional, Any
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from queue_config import QueueConfig
-from train import add_common_args, run_pipeline
-
+from train import add_common_args, run_pipeline, set_full_determinism
 
 # -------------------------
 # Cost proxy helpers
@@ -263,6 +261,14 @@ def parse_args():
 def main():
     args = parse_args()
     config = QueueConfig()
+    if getattr(args, "seed", None) is not None:
+        config.seed = int(args.seed)
+    if getattr(args, "device", None) is not None:
+        config.device = str(args.device)
+    if getattr(args, "embedder_model", None) is not None:
+        config.embedder_model = str(args.embedder_model)
+
+    set_full_determinism(int(config.seed))
 
     df, models, cost_map = load_mixinstruct_hf(
         dataset_id=str(args.data),

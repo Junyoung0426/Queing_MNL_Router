@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
+import random
 import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
@@ -28,7 +30,29 @@ from llm_embedding import (
     compute_score_matrix,
     build_a_table_from_xi_S,
 )
+def set_full_determinism(seed: int):
+    import os, random
+    import numpy as np
+    import torch
 
+    os.environ["PYTHONHASHSEED"] = str(seed)  
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    torch.use_deterministic_algorithms(True)
+
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
 # ============================================================
 # JSON save helpers

@@ -1,5 +1,3 @@
-#plot_regret.py
-
 import argparse
 from pathlib import Path
 import numpy as np
@@ -32,7 +30,6 @@ def parse_args():
     return ap.parse_args()
 
 def get_lambdas_from_dir(output_dir: Path):
-
     files = list(output_dir.glob("regret_history_lam_*.csv"))
     if not files:
         print(f"[Warn] No 'regret_history_lam_*.csv' files found in {output_dir}")
@@ -41,7 +38,6 @@ def get_lambdas_from_dir(output_dir: Path):
     lambdas = []
     for f in files:
         try:
-
             stem = f.stem
             parts = stem.split("_")
             if "lam" in parts:
@@ -69,6 +65,12 @@ def main():
         return
 
     print(f"[Info] Target Lambdas: {target_lambdas}")
+    
+    # max_steps 설정 여부에 따라 파일명 접미사 생성
+    filename_suffix = ""
+    if args.max_steps is not None:
+        print(f"[Info] Plotting restricted to first {args.max_steps} steps.")
+        filename_suffix = f"_{args.max_steps}"
 
     data_store = {}
 
@@ -87,7 +89,6 @@ def main():
         if "cum_regret" in df_reg.columns:
             std_reg = df_reg["cum_regret"].to_numpy()
         else:
-
             std_reg = df_reg.iloc[:, 0].to_numpy()
 
         rounds = np.arange(1, len(std_reg) + 1)
@@ -98,6 +99,7 @@ def main():
         else:
             q_diff = df_q.iloc[:, 0].to_numpy()
 
+        # 데이터 길이 자르기 로직
         L = min(len(rounds), len(q_diff))
         if args.max_steps is not None:
             L = min(L, args.max_steps)
@@ -121,6 +123,7 @@ def main():
     plt.style.use("seaborn-v0_8-whitegrid")
     colors = plt.cm.viridis(np.linspace(0, 0.9, len(data_store)))
 
+    # 1. Standard Regret Plot
     plt.figure(figsize=(10,6))
     for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
         plt.plot(
@@ -133,15 +136,17 @@ def main():
 
     plt.xlabel("Time Step $t$", fontsize=12)
     plt.ylabel("Standard Cumulative Regret", fontsize=12)
-    plt.title("Standard Regret (Learning Performance)", fontsize=14)
+    plt.title(f"Standard Regret (First {args.max_steps if args.max_steps else 'All'} Steps)", fontsize=14)
     plt.legend(fontsize=10)
     plt.tight_layout()
 
-    out_std = plots_dir / "plot_standard_regret.png"
+    # 파일명에 suffix 추가
+    out_std = plots_dir / f"plot_standard_regret{filename_suffix}.png"
     plt.savefig(out_std, dpi=300)
     plt.close()
     print(f"[Saved] {out_std}")
 
+    # 2. Queue Stability Plot
     plt.figure(figsize=(10, 6))
     for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
         plt.plot(
@@ -160,11 +165,13 @@ def main():
     plt.legend(fontsize=10)
     plt.tight_layout()
 
-    out_q_diff = plots_dir / "plot_queue_stability.png"
+    # 파일명에 suffix 추가
+    out_q_diff = plots_dir / f"plot_queue_stability{filename_suffix}.png"
     plt.savefig(out_q_diff, dpi=300)
     plt.close()
     print(f"[Saved] {out_q_diff}")
 
+    # 3. Cumulative Queue Gap Plot
     plt.figure(figsize=(10, 6))
     for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
         plt.plot(
@@ -181,7 +188,8 @@ def main():
     plt.legend(fontsize=10)
     plt.tight_layout()
 
-    out_q_cum = plots_dir / "plot_queue_cumulative.png"
+    # 파일명에 suffix 추가
+    out_q_cum = plots_dir / f"plot_queue_cumulative{filename_suffix}.png"
     plt.savefig(out_q_cum, dpi=300)
     plt.close()
     print(f"[Saved] {out_q_cum}")
