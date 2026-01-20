@@ -1,3 +1,4 @@
+#B_MNL_Bandit/queue_env.py
 from typing import List, Tuple, Optional
 from itertools import combinations
 import math
@@ -373,9 +374,9 @@ class QueueEnv:
                     explore_used = True
                     self.cnt_explore += 1
 
-            # (2) Exploitation: Evaluate all (job, combination) pairs using TS noise and select best
+            # (2) Exploration + Exploitation: Evaluate all (job, combination) pairs using TS noise and select best
             if x_ctx is None:
-                t_eff = self.config.max_steps
+                t_eff = self.config.max_steps #max(1, t)
                 term1 = self.d * math.log(1.0 + (t_eff * self.K) / (self.d * self.lambda_0))
                 term2 = 4.0 * math.log(t_eff)
                 term3 = self.kappa * math.sqrt(self.lambda_0)
@@ -419,9 +420,11 @@ class QueueEnv:
                 y_vec[0] = 1.0
             else:
                 y_vec[int(j_local) + 1] = 1.0
-
+            
+            self.router.train()
             loss_mnl_curr, _ = self.router.update_from_ctx(x_ctx, S_t, y_vec)
-
+            self.router.eval()
+            
             # Re-insert into queue if the job did not depart (outside choice)
             if not departed:
                 self.queue_router.append((uid_r, ctx_idx_r))

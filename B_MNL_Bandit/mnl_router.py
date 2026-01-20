@@ -1,4 +1,4 @@
-# mnl_router.py
+#B_MNL_Bandit/mnl_router.py
 from __future__ import annotations
 
 from typing import List, Tuple, Optional, Union
@@ -118,11 +118,19 @@ class MNLRouter(nn.Module):
         self._ts_last_jitter: float = 0.0
 
         self.opt_b: Optional[torch.optim.Optimizer] = None
+        self._B_frozen: bool = False
         self.freeze_B()
+
 
     @property
     def dev(self) -> torch.device:
         return self.theta.device
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # B가 freeze 상태면 어떤 경우에도 eval로 고정
+        if getattr(self, "_B_frozen", False):
+            self.B.eval()
+        return self
 
     # --------- diagnostics getters ---------
     @property
@@ -262,14 +270,19 @@ class MNLRouter(nn.Module):
             self.opt_b = None
             return
         for p in params:
-            p.requires_grad = True
+            p.requires_grad_(True)
+        self._B_frozen = False
         lr_use = self.lr_b_default if lr_b is None else float(lr_b)
         self.opt_b = torch.optim.Adam(params, lr=lr_use)
+        self.B.train()
 
     def freeze_B(self):
         for p in self.B.parameters():
-            p.requires_grad = False
+            p.requires_grad_(False)
         self.opt_b = None
+        self._B_frozen = True
+        self.B.eval()
+
 
     # ---------- online reset ----------
     def reset_for_online(self):
@@ -372,7 +385,8 @@ class MNLRouter(nn.Module):
         z_S: (K, d) float32
         y_vec: (K+1,) one-hot, index 0 is outside option
         """
-        self.eval()
+        self.train() 
+        self.B.eval()
 
         z_S = z_S.to(device=self.dev, dtype=torch.float32).contiguous()
         y_vec = y_vec.to(device=self.dev, dtype=torch.float32).view(-1)

@@ -1,4 +1,4 @@
-# llm_embedding.py
+#B_MNL_Bandit/llm_embedding.py
 from __future__ import annotations
 
 from typing import List

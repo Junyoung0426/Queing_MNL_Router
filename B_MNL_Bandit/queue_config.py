@@ -1,4 +1,4 @@
-# queue_config.py
+#B_MNL_Bandit/queue_config.py
 from dataclasses import dataclass
 from typing import Optional
 import torch
@@ -33,9 +33,9 @@ class QueueConfig:
     # -----------------------------
     # Queue / Bandit (Online)
     # -----------------------------
-    assort_K: int = 2
+    assort_K: int = 1
     arrival_rate: float = 0.6
-    max_steps: int = 200_000
+    max_steps: int = 100000
 
     # util -> r -> odds
     r_eps: float = 1e-6
@@ -43,12 +43,12 @@ class QueueConfig:
     r_hi: float = 0.99
 
     # unknown horizon schedule
-    kappa: float = 4.0
+    kappa: float =4.0
     c1: float = 50.0
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
-    alpha_coef: float = 0.1
+    alpha_coef: float = 0.01
 
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"
