@@ -25,9 +25,7 @@ def _load_module_from_path(mod_name: str, path: str):
 
 
 def load_base_train():
-    """
-    B_MNL_Bandit/train.py를 파일 경로로 강제 로드한다.
-    """
+
     bandit_dir = _bandit_root_from_common_file()
     if bandit_dir not in sys.path:
         sys.path.insert(0, bandit_dir)
@@ -40,9 +38,7 @@ def load_base_train():
 
 
 def load_queue_config():
-    """
-    무조건 B_MNL_Bandit/queue_config.py를 파일 경로로 강제 로드한다.
-    """
+
     bandit_dir = _bandit_root_from_common_file()
     if bandit_dir not in sys.path:
         sys.path.insert(0, bandit_dir)
