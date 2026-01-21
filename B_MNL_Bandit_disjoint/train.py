@@ -15,6 +15,12 @@ import torch
 from sklearn.model_selection import train_test_split
 from sentence_transformers import SentenceTransformer
 
+# --- [Plotting Libs Added] ---
+import matplotlib
+matplotlib.use("Agg") # 서버 환경(No GUI)을 위해 필수
+import matplotlib.pyplot as plt
+# -----------------------------
+
 from queue_config import QueueConfig
 from mnl_router import MNLRouter
 from queue_env import queue_env
@@ -38,7 +44,6 @@ def set_full_determinism(seed: int):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
-    # 주의: 일부 연산에서 런타임 에러 유발 가능
     if bool(getattr(torch, "use_deterministic_algorithms", None)):
         torch.use_deterministic_algorithms(True)
 
@@ -124,9 +129,6 @@ def _ensure_prompt_column(df: pd.DataFrame):
 
 
 def _dropna_required(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], use_cost: bool) -> pd.DataFrame:
-    """
-    dropna 이후에도 원본 df row 추적 가능하도록 orig_row를 보존한다.
-    """
     df2 = df.copy()
     if "orig_row" not in df2.columns:
         df2["orig_row"] = df2.index.to_numpy()
@@ -169,11 +171,6 @@ def compute_acc_cost_util_all(
 def build_offline_partition_strict_only_per_model(
     util_train: np.ndarray, n_per_model: int, tie_eps: float, seed: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    b_type='none'용(혹시 쓰고 싶을 때):
-    - offline = 모델별 strict winner에서 최대 n_per_model
-    - online = 나머지
-    """
     U = np.asarray(util_train, dtype=np.float32)
     N, K = U.shape
     rng = np.random.RandomState(int(seed))
@@ -202,11 +199,6 @@ def build_offline_partition_strict_only_per_model(
 def build_offline_partition_mincover_then_random(
     util_train: np.ndarray, ratio: float, min_per: int, tie_eps: float, seed: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    b_type!='none'용:
-    - offline_total = round(ratio*N)
-    - strict winner pool에서 모델당 min_per 확보 후 랜덤으로 채움
-    """
     U = np.asarray(util_train, dtype=np.float32)
     N, K = U.shape
     rng = np.random.RandomState(int(seed) + 999)
@@ -250,7 +242,7 @@ def build_offline_partition_mincover_then_random(
 
 
 # ----------------------------
-# Router builder (signature-safe)
+# Router builder
 # ----------------------------
 def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: int) -> MNLRouter:
     sig = inspect.signature(MNLRouter.__init__)
@@ -271,15 +263,154 @@ def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: in
         lr_b=float(getattr(config, "offline_lr_B", 1e-3)),
     )
 
-    # 구버전 호환: combine_mode 파라미터가 존재하면 더미로 넣는다
     if "combine_mode" in sig.parameters:
         kwargs["combine_mode"] = "mul"
-
-    # 신버전 옵션들 존재하면 주입
     if "normalize_z" in sig.parameters:
         kwargs["normalize_z"] = bool(getattr(config, "normalize_z", True))
 
     return MNLRouter(**kwargs)
+
+
+# ----------------------------
+# PLOTTING FUNCTION (Integrated)
+# ----------------------------
+def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optional[int] = None):
+    """
+    plot_regret.py의 로직을 함수화함.
+    학습이 끝난 후 즉시 호출되어 결과 그래프를 저장함.
+    """
+    print(f"\n[Plotting] Generating plots in {output_dir}...")
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    if not target_lambdas:
+        print("[Warn] No lambdas to plot.")
+        return
+
+    # sort
+    target_lambdas = sorted(target_lambdas)
+    print(f"[Plotting] Target Lambdas: {target_lambdas}")
+    
+    filename_suffix = ""
+    if max_steps is not None:
+        print(f"[Plotting] Restricted to first {max_steps} steps.")
+        filename_suffix = f"_{max_steps}"
+
+    data_store = {}
+
+    for lam in target_lambdas:
+        lam_tag = f"{lam:.2f}"
+        
+        # 파일명 매칭 (CSV 파일 존재 확인)
+        reg_path = output_dir / f"regret_history_lam_{lam_tag}.csv"
+        q_path   = output_dir / f"Qregret_history_lam_{lam_tag}.csv"
+
+        if not reg_path.exists() or not q_path.exists():
+            print(f"[Warn] Missing files for lambda={lam}, skipping plotting.")
+            continue
+
+        df_reg = pd.read_csv(reg_path)
+        if "cum_regret" in df_reg.columns:
+            std_reg = df_reg["cum_regret"].to_numpy()
+        else:
+            std_reg = df_reg.iloc[:, 0].to_numpy()
+
+        rounds = np.arange(1, len(std_reg) + 1)
+
+        df_q = pd.read_csv(q_path)
+        if "Q_diff" in df_q.columns:
+            q_diff = df_q["Q_diff"].to_numpy()
+        else:
+            q_diff = df_q.iloc[:, 0].to_numpy()
+
+        L = min(len(rounds), len(q_diff))
+        if max_steps is not None:
+            L = min(L, max_steps)
+
+        rounds = rounds[:L]
+        std_reg = std_reg[:L]
+        q_diff = q_diff[:L]
+        q_cum = np.cumsum(q_diff)
+
+        data_store[lam] = {
+            "rounds": rounds,
+            "std_reg": std_reg,
+            "q_diff": q_diff,
+            "q_cum": q_cum,
+        }
+
+    if not data_store:
+        print("[Error] No valid data loaded for plotting.")
+        return
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    colors = plt.cm.viridis(np.linspace(0, 0.9, len(data_store)))
+
+    # 1. Standard Regret Plot
+    plt.figure(figsize=(10,6))
+    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
+        plt.plot(
+            data["rounds"],
+            data["std_reg"],
+            label=f"$\\lambda={lam}$",
+            color=colors[i],
+            linewidth=2,
+        )
+
+    plt.xlabel("Time Step $t$", fontsize=12)
+    plt.ylabel("Standard Cumulative Regret", fontsize=12)
+    plt.title(f"Standard Regret", fontsize=14)
+    plt.legend(fontsize=10)
+    plt.tight_layout()
+    out_std = plots_dir / f"plot_standard_regret{filename_suffix}.png"
+    plt.savefig(out_std, dpi=300)
+    plt.close()
+    print(f"[Saved] {out_std}")
+
+    # 2. Queue Stability Plot
+    plt.figure(figsize=(10, 6))
+    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
+        plt.plot(
+            data["rounds"],
+            data["q_diff"],
+            label=f"$\\lambda={lam}$",
+            color=colors[i],
+            alpha=0.7,
+            linewidth=1,
+        )
+
+    plt.axhline(0, color="black", linestyle="--", alpha=0.5)
+    plt.xlabel("Time Step $t$", fontsize=12)
+    plt.ylabel(r"$|Q(t) - Q^*(t)|$", fontsize=12)
+    plt.title("Instantaneous Queue Gap (Absolute)", fontsize=14)
+    plt.legend(fontsize=10)
+    plt.tight_layout()
+    out_q_diff = plots_dir / f"plot_queue_stability{filename_suffix}.png"
+    plt.savefig(out_q_diff, dpi=300)
+    plt.close()
+    print(f"[Saved] {out_q_diff}")
+
+    # 3. Cumulative Queue Gap Plot
+    plt.figure(figsize=(10, 6))
+    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
+        plt.plot(
+            data["rounds"],
+            data["q_cum"],
+            label=f"$\\lambda={lam}$",
+            color=colors[i],
+            linewidth=2,
+        )
+
+    plt.xlabel("Time Step $t$", fontsize=12)
+    plt.ylabel(r"Cumulative $Q(s) - Q^*(s)$", fontsize=12)
+    plt.title("Cumulative Queue Gap ", fontsize=14)
+    plt.legend(fontsize=10)
+    plt.tight_layout()
+    out_q_cum = plots_dir / f"plot_queue_cumulative{filename_suffix}.png"
+    plt.savefig(out_q_cum, dpi=300)
+    plt.close()
+    print(f"[Saved] {out_q_cum}")
+    print("[Plotting] All plots generated successfully.\n")
 
 
 # ----------------------------
@@ -453,5 +584,11 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
 
         print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f}")
 
-
+    # --- [Run Plotting] ---
+    # 모든 lambda loop가 끝난 후 플롯 생성
+    try:
+        run_plotting(output_dir, lambdas)
+    except Exception as e:
+        print(f"[Error] Failed to generate plots: {e}")
+    # ----------------------
 
