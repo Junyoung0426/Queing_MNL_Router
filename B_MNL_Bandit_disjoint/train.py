@@ -68,7 +68,7 @@ def _to_jsonable(x: Any) -> Any:
 
 
 def _safe_mean(x) -> float:
-    arr = np.asarray(x, dtype=np.float64)
+    arr = np.asarray(x, dtype=np.float32)
     return float(arr.mean()) if arr.size > 0 else float("nan")
 
 

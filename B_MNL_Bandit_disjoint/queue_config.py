@@ -27,7 +27,7 @@ class QueueConfig:
     d_ctx: Optional[int] = None
     n_models: Optional[int] = None
 
-    combine_mode: str = "mul"   # "mul" or "add"
+    # combine_mode: str = "mul"   # "mul" or "add"
     explore_enabled: bool = True
 
     # -----------------------------
@@ -53,8 +53,8 @@ class QueueConfig:
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"
 
-    lbfgs_max_iter: int = 50
-    lbfgs_history_size: int = 50
+    lbfgs_max_iter: int = 100
+    lbfgs_history_size: int = 100
     lbfgs_line_search: str = "strong_wolfe"
 
 
@@ -72,7 +72,7 @@ class QueueConfig:
     # B Projection architecture (Offline)
     # -----------------------------
     d_proj: int = 64
-    b_type: str = "mlp"          # "none" / "linear" / "mlp"
+    b_type: str = "none"          # "none" / "linear" / "mlp"
     b_hidden_mult: int = 2
 
     # -----------------------------
