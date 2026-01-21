@@ -34,7 +34,7 @@ class QueueConfig:
     # Queue / Bandit (Online)
     # -----------------------------
     assort_K: int = 1
-    arrival_rate: float = 0.5
+    arrival_rate: float = 0.3
     max_steps: int = 100000
 
     # util -> r -> odds
@@ -44,17 +44,17 @@ class QueueConfig:
 
     # unknown horizon schedule
     kappa: float =4.0
-    c1: float = 50.0
+    c1: float = 80.0
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
-    alpha_coef: float = 0.002
+    alpha_coef: float = 0.006
 
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"
 
-    lbfgs_max_iter: int = 100
-    lbfgs_history_size: int = 100
+    lbfgs_max_iter: int = 50
+    lbfgs_history_size: int = 50
     lbfgs_line_search: str = "strong_wolfe"
 
 
