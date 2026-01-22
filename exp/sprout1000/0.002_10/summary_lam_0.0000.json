@@ -1,0 +1,14 @@
+{
+  "lam_cost": 0.0,
+  "avg_regret": 0.07569227681782155,
+  "final_Q_gap": 1.0,
+  "explore_rate": 0.11431989992929788,
+  "dep_router_mean": 0.8681507110595703,
+  "n_stream": 1000,
+  "offline_total": 0,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "none",
+  "elapsed_seconds": 620.5037431716919,
+  "elapsed_minutes": 10.341729052861531
+}

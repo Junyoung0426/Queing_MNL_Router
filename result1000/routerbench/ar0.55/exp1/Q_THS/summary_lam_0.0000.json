@@ -1,15 +1,15 @@
 {
   "seed": 42,
   "lam_cost": 0.0,
-  "avg_regret": 0.48309199769659783,
-  "final_Q_gap": 421.0,
-  "explore_rate": 0.5727436461877127,
-  "dep_router_mean": 0.5065956711769104,
+  "avg_regret": 0.47935844740973327,
+  "final_Q_gap": 752.0,
+  "explore_rate": 0.3886165849754927,
+  "dep_router_mean": 0.5104865431785583,
   "n_stream": 1000,
   "offline_total": 0,
   "online_total": 1000,
   "use_offline_stream": false,
   "b_type": "none",
-  "elapsed_seconds": 0.8433923721313477,
-  "elapsed_minutes": 0.014056539535522461
+  "elapsed_seconds": 1.0041069984436035,
+  "elapsed_minutes": 0.016735116640726726
 }
