@@ -79,6 +79,28 @@ def _get_assort_k(BASE_DIR: Path, dataset: str) -> int:
         return 1
 
 
+def _get_arrival_rate(BASE_DIR: Path, dataset: str):
+    cfg = _get_cfg(BASE_DIR, dataset)
+    if cfg is None:
+        return None
+    if not hasattr(cfg, "arrival_rate"):
+        return None
+    try:
+        return float(getattr(cfg, "arrival_rate"))
+    except Exception:
+        return None
+
+
+def _format_ar_tag(x):
+    if x is None:
+        return "arNA"
+    try:
+        s = f"{float(x):g}"
+        return f"ar{s}"
+    except Exception:
+        return "arNA"
+
+
 def main():
     BASE_DIR = Path(__file__).resolve().parent
 
@@ -167,14 +189,14 @@ def main():
         auto_seed = base_seed + (int(args.run) - 1)
 
         assort_k = _get_assort_k(BASE_DIR, ds)
+        arrival_rate = _get_arrival_rate(BASE_DIR, ds)
+        ar_tag = _format_ar_tag(arrival_rate)
 
-        # algorithm filter first
         if allow_algs is not None:
             targets_filtered = [t for t in targets if t[1] in allow_algs]
         else:
             targets_filtered = list(targets)
 
-        # then assort_K skip logic
         if assort_k >= 2:
             skip_names = {"RAND", "Q_UCB", "Q_THS"}
             targets_run = [t for t in targets_filtered if t[1] not in skip_names]
@@ -183,6 +205,7 @@ def main():
 
         print(f"\n========== DATASET: {ds} ==========")
         print("assort_K:", assort_k)
+        print("arrival_rate:", arrival_rate, "=>", ar_tag)
         if assort_k >= 2:
             print("[Skip] assort_K>=2 -> skipping:", ["RAND", "Q_UCB", "Q_THS"])
         if allow_algs is not None:
@@ -203,7 +226,7 @@ def main():
                 print(f"[SKIP] script not found: {script_path}")
                 continue
 
-            current_output_dir = (save_root / ds / exp_tag / output_name).resolve()
+            current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
             current_output_dir.mkdir(parents=True, exist_ok=True)
 
             cmd = [
@@ -219,12 +242,12 @@ def main():
 
             cmd += extra_args
 
-            print(f"\n--- Running: {ds}/{exp_tag}/{output_name} ---")
+            print(f"\n--- Running: {ds}/{ar_tag}/{exp_tag}/{output_name} ---")
             try:
                 _run(cmd, cwd=target_folder, dry_run=args.dry_run)
-                print(f"--- Finished: {ds}/{exp_tag}/{output_name} ---")
+                print(f"--- Finished: {ds}/{ar_tag}/{exp_tag}/{output_name} ---")
             except subprocess.CalledProcessError as e:
-                print(f"[ERROR] {ds}/{exp_tag}/{output_name}: {e}")
+                print(f"[ERROR] {ds}/{ar_tag}/{exp_tag}/{output_name}: {e}")
                 continue
 
     print("\nALL DONE")
@@ -232,4 +255,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 #python3 B_MNL_Bandit_disjoint/run_all.py result --run 1 --datasets sprout --job_pool_size 5000 --lam_list 0.0 0.1 1 5 --algs AQCB
