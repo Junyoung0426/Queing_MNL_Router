@@ -47,7 +47,11 @@ class QueueConfig:
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
+<<<<<<< HEAD
     alpha_coef: float = 0.0001
+=======
+    alpha_coef: float = 0.001
+>>>>>>> c3f2a41 (Changes to be committed:)
 
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"
