@@ -373,5 +373,5 @@ if __name__ == "__main__":
     main()
 #실행 예시(ACQB-CL 하나에서 람다 여러 개 겹치기)
 #python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --include ACQB-CL --mode per_alg
-#특정 람다만 겹치기
-#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --include ACQB-CL --mode per_alg
+#특정 람다별 전체 알고리즘
+#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --lambda 5
