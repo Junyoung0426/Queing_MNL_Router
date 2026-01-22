@@ -1,4 +1,4 @@
-# B_MNL_Bandit/queue_env.py
+# B_MNL_Bandit_disjoint/queue_env.py
 from typing import List, Tuple, Optional
 from itertools import combinations
 import math

@@ -1,4 +1,4 @@
-# B_MNL_Bandit/train.py
+# B_MNL_Bandit_disjoint/train.py
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ import random
 import inspect
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
-
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -478,7 +478,7 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
     for lam in lambdas:
         lam = float(lam)
         print(f"\n>>> Running lambda={lam:.4f} <<<")
-
+        start_time = time.time()
         acc_train, util_train = compute_acc_cost_util_all(
             df_train, models, cost_map,
             use_cost=bool(getattr(config, "use_cost", True)),
@@ -555,6 +555,8 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             row_ids=row_ids,
             sample_ids=sample_ids,
         )
+        end_time = time.time()
+        elapsed_sec = end_time - start_time
 
         # Logging
         pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.2f}.csv", index=False)
@@ -579,10 +581,12 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             "online_total": int(len(online_idx)),
             "use_offline_stream": bool(getattr(args, "use_offline_stream", False)),
             "b_type": str(b_type),
+            "elapsed_seconds": float(elapsed_sec),        
+            "elapsed_minutes": float(elapsed_sec / 60.0)
         }
         _dump_json(output_dir / f"summary_lam_{lam:.4f}.json", summary)
 
-        print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f}")
+        print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f} time={elapsed_sec:.1f}s")
 
     # --- [Run Plotting] ---
     # 모든 lambda loop가 끝난 후 플롯 생성

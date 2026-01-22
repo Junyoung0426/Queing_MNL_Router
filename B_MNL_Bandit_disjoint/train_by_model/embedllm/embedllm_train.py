@@ -1,20 +1,37 @@
+#B_MNL_Bandit_disjoint/train_by_model/embedllm/embedllm_train.py
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import os
 import sys
 import argparse
 import numpy as np
 import pandas as pd
 from typing import Tuple, List, Dict, Optional, Any
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+current_dir = os.path.dirname(os.path.abspath(__file__))          # .../train_by_model/embedllm
+parent_dir = os.path.dirname(current_dir)                         # .../train_by_model
+root_dir = os.path.dirname(parent_dir)                            # .../B_MNL_Bandit_disjoint
 
-from queue_config import QueueConfig
+for p in (current_dir, root_dir):
+    while p in sys.path:
+        sys.path.remove(p)
+
+sys.path.insert(0, current_dir)  
+sys.path.insert(1, root_dir)      
+
+sys.modules.pop("queue_config", None)
+sys.modules.pop("train", None)
+
+
 from train import add_common_args, run_pipeline, set_full_determinism
+from queue_config import QueueConfig
+
+# 확인
+import queue_config as qc
+print("[queue_config loaded from]", qc.__file__)
 
 
 def _parse_size_b(model_name: str, default: float = 7.0) -> float:

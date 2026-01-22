@@ -1,4 +1,4 @@
-# B_MNL_Bandit/mnl_router.py
+# B_MNL_Bandit_disjoint/mnl_router.py
 from __future__ import annotations
 
 from typing import List, Tuple, Optional, Union
