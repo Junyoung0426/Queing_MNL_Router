@@ -1,0 +1,15 @@
+{
+  "seed": 42,
+  "lam_cost": 1.0,
+  "avg_regret": 0.02841706586135131,
+  "final_Q_gap": 2.0,
+  "explore_rate": 0.0927682119205298,
+  "dep_router_mean": 0.9532037377357483,
+  "n_stream": 1000,
+  "offline_total": 0,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "none",
+  "elapsed_seconds": 861.458913564682,
+  "elapsed_minutes": 14.357648559411366
+}

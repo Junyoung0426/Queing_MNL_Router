@@ -3,7 +3,7 @@
   "log_every": 100,
   "debug_verbose": true,
   "debug_topk": 3,
-  "device": "cpu",
+  "device": "cuda",
   "embedder_model": "sentence-transformers/all-MiniLM-L6-v2",
   "test_size": 0.2,
   "use_cost": true,
