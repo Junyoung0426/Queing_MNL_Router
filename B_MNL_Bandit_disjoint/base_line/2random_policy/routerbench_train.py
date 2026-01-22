@@ -11,54 +11,48 @@ script_name = os.path.basename(__file__)
 dataset_name = script_name.split("_train.py")[0]
 
 if not dataset_name or dataset_name == script_name:
-    raise ValueError(f"Filename does not match '_train.py' format: {script_name}")
-
-print(f"[Info] Detected dataset name from filename: '{dataset_name}'")
+    raise ValueError(f"Filename format error: {script_name}")
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 base_line_dir = os.path.dirname(cur_dir)
 root_dir = os.path.dirname(base_line_dir)
+project_root = os.path.dirname(root_dir)
+data_dir = os.path.join(project_root, "Data")
 
 target_config_dir = os.path.join(root_dir, "train_by_model", dataset_name)
-
 if not os.path.exists(target_config_dir):
-    raise FileNotFoundError(f"Config folder not found: {target_config_dir}")
+    raise FileNotFoundError(f"Config dir not found: {target_config_dir}")
 
 common_dir = os.path.join(base_line_dir, "_common")
+random_env_dir = cur_dir
 
 sys.path.insert(0, target_config_dir)
 sys.path.insert(1, common_dir)
-sys.path.insert(2, root_dir)
+sys.path.insert(2, random_env_dir)
+sys.path.insert(3, root_dir)
 
 sys.modules.pop("queue_config", None)
+sys.modules.pop("queue_env", None)
 
 from queue_config import QueueConfig
-
-sys.path.insert(0, cur_dir)
 from baseline_common import add_common_args, set_full_determinism, run_pipeline_with_env
-from baseline_loaders import load_routerbench_pkl
+from baseline_loaders import load_standardized_csv
 
 try:
     from queue_env import queue_env as all_random_queue_env
 except ImportError:
-    sys.path.append(root_dir)
-    from queue_env import queue_env as all_random_queue_env
-
+    raise ImportError(f"Cannot find queue_env.py in {random_env_dir}")
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Baseline (2) ALL-RANDOM on RouterBench(pkl)")
-    ap.add_argument("--data", type=str, required=True)
+    ap = argparse.ArgumentParser()
+    default_path = os.path.join(data_dir, "routerbench_dataset.csv")
+    ap.add_argument("--data", type=str, default=default_path)
     add_common_args(ap)
     return ap.parse_args()
 
-
 def main():
     args = parse_args()
-
     config = QueueConfig()
-
-    import queue_config as qc
-    print(f"[Info] Loaded QueueConfig from: {qc.__file__}")
 
     if getattr(args, "seed", None) is not None:
         config.seed = int(args.seed)
@@ -72,10 +66,9 @@ def main():
 
     set_full_determinism(int(config.seed))
 
-    df, models, cost_map = load_routerbench_pkl(
+    df, models, cost_map = load_standardized_csv(
         path=str(args.data),
-        use_cost=bool(config.use_cost),
-        models_fixed=None,
+        use_cost=bool(config.use_cost)
     )
 
     run_pipeline_with_env(
@@ -86,7 +79,6 @@ def main():
         config, 
         baseline_queue_env_func=all_random_queue_env
     )
-
 
 if __name__ == "__main__":
     main()

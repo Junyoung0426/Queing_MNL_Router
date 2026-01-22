@@ -11,58 +11,50 @@ script_name = os.path.basename(__file__)
 dataset_name = script_name.split("_train.py")[0]
 
 if not dataset_name or dataset_name == script_name:
-    raise ValueError(f"Filename does not match '_train.py' format: {script_name}")
-
-print(f"[Info] Detected dataset name from filename: '{dataset_name}'")
+    raise ValueError(f"Filename format error: {script_name}")
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 base_line_dir = os.path.dirname(cur_dir)
 root_dir = os.path.dirname(base_line_dir)
+project_root = os.path.dirname(root_dir)
+data_dir = os.path.join(project_root, "Data")
 
 target_config_dir = os.path.join(root_dir, "train_by_model", dataset_name)
-
 if not os.path.exists(target_config_dir):
-    raise FileNotFoundError(f"Config folder not found: {target_config_dir}")
+    raise FileNotFoundError(f"Config dir not found: {target_config_dir}")
 
 common_dir = os.path.join(base_line_dir, "_common")
+qucb_env_dir = cur_dir
 
 sys.path.insert(0, target_config_dir)
 sys.path.insert(1, common_dir)
-sys.path.insert(2, root_dir)
+sys.path.insert(2, qucb_env_dir)
+sys.path.insert(3, root_dir)
 
 sys.modules.pop("queue_config", None)
+sys.modules.pop("queue_env", None)
 
 from queue_config import QueueConfig
-sys.path.insert(0, cur_dir)
 from baseline_common import add_common_args, set_full_determinism, run_pipeline_with_env
-from baseline_loaders import load_embedllm_hf_csv_pivot
+from baseline_loaders import load_standardized_csv
 
 try:
     from queue_env import queue_env as qucb_queue_env
 except ImportError:
-    sys.path.append(root_dir)
-    from queue_env import queue_env as qucb_queue_env
-
+    raise ImportError(f"Cannot find queue_env.py in {qucb_env_dir}")
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Baseline (3) QUCB on EmbedLLM(HF csv pivot)")
-    ap.add_argument("--data", type=str, default="RZ412/EmbedLLM")
-    ap.add_argument("--hf_split", type=str, default="train")
-    ap.add_argument("--chunksize", type=int, default=200_000)
-    ap.add_argument("--default_B", type=float, default=7.0)
+    ap = argparse.ArgumentParser()
+    default_path = os.path.join(data_dir, "embedllm_dataset.csv")
+    ap.add_argument("--data", type=str, default=default_path)
     ap.add_argument("--explore_S_policy", type=str, default="round_robin", choices=["round_robin", "random"])
     ap.add_argument("--qucb_s", type=float, default=1.0)
     add_common_args(ap)
     return ap.parse_args()
 
-
 def main():
     args = parse_args()
-
     config = QueueConfig()
-
-    import queue_config as qc
-    print(f"[Info] Loaded QueueConfig from: {qc.__file__}")
 
     if getattr(args, "seed", None) is not None:
         config.seed = int(args.seed)
@@ -79,13 +71,9 @@ def main():
 
     set_full_determinism(int(config.seed))
 
-    df, models, cost_map = load_embedllm_hf_csv_pivot(
-        dataset_id=str(args.data),
-        split=str(args.hf_split),
-        use_cost=bool(config.use_cost),
-        seed=int(config.seed),
-        chunksize=int(args.chunksize),
-        default_B=float(args.default_B),
+    df, models, cost_map = load_standardized_csv(
+        path=str(args.data),
+        use_cost=bool(config.use_cost)
     )
 
     run_pipeline_with_env(
@@ -96,7 +84,6 @@ def main():
         config, 
         baseline_queue_env_func=qucb_queue_env
     )
-
 
 if __name__ == "__main__":
     main()

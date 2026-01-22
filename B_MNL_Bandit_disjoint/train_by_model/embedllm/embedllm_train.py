@@ -1,163 +1,111 @@
-#B_MNL_Bandit_disjoint/train_by_model/embedllm/embedllm_train.py
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import os
 import sys
 import argparse
-import numpy as np
+import importlib.util
 import pandas as pd
-from typing import Tuple, List, Dict, Optional, Any
-current_dir = os.path.dirname(os.path.abspath(__file__))          # .../train_by_model/embedllm
-parent_dir = os.path.dirname(current_dir)                         # .../train_by_model
-root_dir = os.path.dirname(parent_dir)                            # .../B_MNL_Bandit_disjoint
+from typing import Tuple, List, Dict, Optional
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+root_dir = os.path.dirname(parent_dir)
+project_dir = os.path.dirname(root_dir)
+data_dir = os.path.join(project_dir, "Data")
+DEFAULT_DATA = os.path.join(data_dir, "embedllm_dataset.csv")
+
 
 for p in (current_dir, root_dir):
     while p in sys.path:
         sys.path.remove(p)
 
-sys.path.insert(0, current_dir)  
-sys.path.insert(1, root_dir)      
+sys.path.insert(0, current_dir)
+sys.path.insert(1, root_dir)
 
-sys.modules.pop("queue_config", None)
-sys.modules.pop("train", None)
 
+def _load_module_from_path(name: str, path: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load spec: {name} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+queue_config_path = os.path.join(current_dir, "queue_config.py")
+train_path = os.path.join(root_dir, "train.py")
+
+if not os.path.exists(queue_config_path):
+    raise FileNotFoundError(queue_config_path)
+if not os.path.exists(train_path):
+    raise FileNotFoundError(train_path)
+
+_load_module_from_path("queue_config", queue_config_path)
+_load_module_from_path("train", train_path)
 
 from train import add_common_args, run_pipeline, set_full_determinism
 from queue_config import QueueConfig
 
-# 확인
-import queue_config as qc
-print("[queue_config loaded from]", qc.__file__)
+
+def infer_models_and_cost_map(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str]]:
+    base = {"sample_id", "prompt", "eval_name", "oracle_model_to_route_to", "oracle_model"}
+    models = [c for c in df.columns if ("|" not in c) and (c not in base)]
+    cost_map = {c.split("|")[0]: c for c in df.columns if str(c).endswith("|total_cost")}
+    return models, cost_map
 
 
-def _parse_size_b(model_name: str, default: float = 7.0) -> float:
-    import re
-    s = str(model_name).lower()
-    m = re.search(r"(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*b", s)
-    if m:
-        return float(m.group(1)) * float(m.group(2))
-    m = re.search(r"(\d+(?:\.\d+)?)\s*b", s)
-    if m:
-        return float(m.group(1))
-    return float(default)
-
-
-def load_embedllm_hf_csv_pivot(
-    dataset_id: str,
-    split: str,
+def load_routerbench_like_csv(
+    path: str,
     use_cost: bool,
-    # max_prompts 인자 제거됨
-    seed: int = 0,
-    chunksize: int = 200_000,
+    models_fixed: Optional[List[str]] = None,
 ) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
-    from huggingface_hub import hf_hub_download  # pip install huggingface_hub
+    df = pd.read_csv(path)
 
-    print(f"🔄 Loading FULL dataset from {dataset_id} ({split})...")
+    if "prompt" not in df.columns:
+        raise ValueError("df에 'prompt' 컬럼이 필요하다")
 
-    split2file = {"train": "train.csv", "validation": "val.csv", "val": "val.csv", "test": "test.csv"}
-    filename = split2file.get(split, split)
-    csv_path = hf_hub_download(repo_id=dataset_id, filename=filename, repo_type="dataset")
+    models_all, cost_map_all = infer_models_and_cost_map(df)
 
-    # model_order.csv로 모델 목록을 고정한다
-    model_order_path = hf_hub_download(repo_id=dataset_id, filename="model_order.csv", repo_type="dataset")
-    model_df = pd.read_csv(model_order_path)
-    if "model_name" not in model_df.columns:
-        raise ValueError("[EmbedLLM] model_order.csv missing 'model_name'")
-    models = model_df["model_name"].astype(str).tolist()
-    K = len(models)
-    model_set = set(models)
+    if models_fixed is None:
+        models = models_all
+    else:
+        models = list(models_fixed)
+        missing = [m for m in models if m not in models_all]
+        if missing:
+            raise ValueError(f"models_fixed 중 score 컬럼이 없는 모델이 있다: {missing}")
 
-    # cost proxy: 모델 규모(B)
-    model_cost_proxy = {m: _parse_size_b(m) for m in models}
+    if use_cost:
+        missing_cost = [m for m in models if m not in cost_map_all]
+        if missing_cost:
+            raise ValueError(f"use_cost=True인데 |total_cost 컬럼이 없는 모델이 있다: {missing_cost}")
+        cost_map = {m: cost_map_all[m] for m in models}
+    else:
+        cost_map = {}
 
-    # 전체 데이터를 담을 딕셔너리
-    store: Dict[int, Dict[str, Any]] = {}
-    completed: List[int] = []
+    keep = []
+    for c in ["sample_id", "prompt", "eval_name"]:
+        if c in df.columns:
+            keep.append(c)
 
-    # 청크 단위로 읽지만, 중단 없이 끝까지 읽음
-    reader = pd.read_csv(csv_path, chunksize=int(chunksize))
-    
-    total_rows_processed = 0
-    
-    for i, chunk in enumerate(reader):
-        if "prompt_id" not in chunk.columns or "model_name" not in chunk.columns or "label" not in chunk.columns or "prompt" not in chunk.columns:
-            raise ValueError(f"[EmbedLLM] required columns missing in {filename}")
+    keep += models
+    if use_cost:
+        keep += [cost_map[m] for m in models]
 
-        for r in chunk.itertuples(index=False):
-            pid = int(getattr(r, "prompt_id"))
-            mname = str(getattr(r, "model_name"))
-            
-            # 정의된 모델 목록에 없는 모델은 무시
-            if mname not in model_set:
-                continue
+    seen = set()
+    keep = [c for c in keep if not (c in seen or seen.add(c))]
 
-            rec = store.get(pid)
-            if rec is None:
-                rec = {
-                    "prompt": str(getattr(r, "prompt")),
-                    "labels": {},
-                    "cnt": 0,
-                }
-                store[pid] = rec
-
-            labels = rec["labels"]
-            if mname not in labels:
-                labels[mname] = float(getattr(r, "label"))
-                rec["cnt"] += 1
-                
-                # 모든 모델(K개)의 점수가 다 모였으면 완료 리스트에 추가
-                if rec["cnt"] == K:
-                    completed.append(pid)
-        
-        total_rows_processed += len(chunk)
-        if i % 5 == 0:
-             print(f"   ...processed {total_rows_processed} raw rows, found {len(completed)} complete prompts so far")
-
-    print(f"✅ Raw processing done. Total complete prompts found: {len(completed)}")
-
-    # DataFrame 생성
-    rows: List[Dict[str, Any]] = []
-    for pid in completed:
-        rec = store.get(pid)
-        if rec is None or rec["cnt"] != K:
-            continue
-        labels = rec["labels"]
-        
-        # 안전장치: 혹시라도 모델이 누락되었는지 재확인
-        if any(m not in labels for m in models):
-            continue
-
-        row: Dict[str, Any] = {
-            "sample_id": pid,
-            "prompt": rec["prompt"],
-            "eval_name": "embedllm",
-        }
-        for m in models:
-            row[m] = float(labels[m])
-            if use_cost:
-                row[f"{m}|total_cost"] = float(model_cost_proxy[m])
-        rows.append(row)
-
-    df = pd.DataFrame(rows).reset_index(drop=True)
-    
-    if len(df) == 0:
-        raise ValueError("[EmbedLLM] 0 complete prompts collected. 데이터셋 확인 필요.")
-
-    print(f"✅ Final DataFrame created: {len(df)} samples.")
-    cost_map = {m: f"{m}|total_cost" for m in models} if use_cost else {}
+    df = df[keep].copy()
     return df, models, cost_map
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Train on EmbedLLM(HF) with common pipeline (FULL DATA)")
-    ap.add_argument("--data", type=str, default="RZ412/EmbedLLM")
-    ap.add_argument("--hf_split", type=str, default="train")
-    # --max_prompts 인자 제거됨
-    ap.add_argument("--chunksize", type=int, default=200_000)
+    ap = argparse.ArgumentParser(description="Train on RouterBench-like CSV with common pipeline")
+    ap.add_argument("--data", type=str, default=DEFAULT_DATA)
     add_common_args(ap)
     return ap.parse_args()
 
@@ -165,6 +113,7 @@ def parse_args():
 def main():
     args = parse_args()
     config = QueueConfig()
+
     if getattr(args, "seed", None) is not None:
         config.seed = int(args.seed)
     if getattr(args, "device", None) is not None:
@@ -174,14 +123,7 @@ def main():
 
     set_full_determinism(int(config.seed))
 
-    df, models, cost_map = load_embedllm_hf_csv_pivot(
-        dataset_id=str(args.data),
-        split=str(args.hf_split),
-        use_cost=bool(config.use_cost),
-        seed=int(config.seed),
-        chunksize=int(args.chunksize),
-    )
-    
+    df, models, cost_map = load_routerbench_like_csv(args.data, use_cost=bool(config.use_cost))
     run_pipeline(df, models, cost_map, args, config)
 
 

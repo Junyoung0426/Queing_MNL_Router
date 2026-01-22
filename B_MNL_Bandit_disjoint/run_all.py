@@ -1,4 +1,3 @@
-# run_all.py
 import sys
 import argparse
 import subprocess
@@ -31,11 +30,6 @@ def _has_seed_in_extra(extra_args_list):
 
 
 def _load_default_seed_from_queue_config(qc_path: Path):
-    """
-    qc_path의 QueueConfig().seed를 읽는다.
-    import 충돌 피하려고 파일 경로 기반으로 모듈을 로드한다.
-    실패하면 None 반환한다.
-    """
     try:
         mod_name = f"_queue_config_{qc_path.stem}_{abs(hash(str(qc_path)))}"
         spec = importlib.util.spec_from_file_location(mod_name, str(qc_path))
@@ -54,11 +48,6 @@ def _load_default_seed_from_queue_config(qc_path: Path):
 
 
 def _get_base_seed(BASE_DIR: Path, dataset: str) -> int:
-    """
-    dataset별 train_by_model/{dataset}/queue_config.py의 기본 seed를 읽는다.
-    없으면 train_by_model/routerbench/queue_config.py로 fallback한다.
-    그마저도 없으면 42를 쓴다.
-    """
     qc_path = (BASE_DIR / "train_by_model" / dataset / "queue_config.py").resolve()
     seed = None
     if qc_path.exists():
@@ -76,26 +65,32 @@ def _get_base_seed(BASE_DIR: Path, dataset: str) -> int:
 
 def main():
     BASE_DIR = Path(__file__).resolve().parent
+    
+    # [설정] 기본 데이터 폴더 경로
+    DEFAULT_DATA_DIR = Path("/home/sjy990426/Desktop/LLM_Router/Queing_MNL_Router/Data")
 
     parser = argparse.ArgumentParser(description="Run training sequentially (routerbench/sprout/embedllm).")
-    parser.add_argument("save_path", type=str, help="결과를 저장할 루트 폴더 (예: ./result)")
+    parser.add_argument("save_path", type=str, help="결과 저장 루트 폴더 (예: ./result)")
     parser.add_argument("--run", type=int, required=True, help="실험 run 번호 (예: 1,2,3...)")
 
     parser.add_argument(
         "--datasets",
         nargs="+",
+        # [변경] mixinstruct 제외
         default=["routerbench", "sprout", "embedllm"],
         choices=["routerbench", "sprout", "embedllm"],
     )
-    parser.add_argument("--job_pool_size", type=int, default=1000)
-    parser.add_argument("--lam_list", type=float, nargs="+", default=[0.0])
+
+    parser.add_argument("--job_pool_size", type=int, required=True, help="train에서 sample n개 뽑는 크기")
+    parser.add_argument("--lam_list", type=float, nargs="+", required=True, help="lambda 리스트 (공백으로 여러 개)")
+
     parser.add_argument("--dry_run", action="store_true")
 
-    parser.add_argument("--routerbench_data", type=str, default="routerbench_0shot.pkl")
-    parser.add_argument("--sprout_data", type=str, default="CARROT-LLM-Routing/SPROUT-o3mini")
-    parser.add_argument("--sprout_split", type=str, default="train")
-    parser.add_argument("--embedllm_data", type=str, default="RZ412/EmbedLLM")
-    parser.add_argument("--embedllm_split", type=str, default="train")
+    # [변경] CSV 파일 경로 인자
+    parser.add_argument("--routerbench_csv", type=str, default=str(DEFAULT_DATA_DIR / "routerbench_dataset.csv"))
+    parser.add_argument("--sprout_csv", type=str, default=str(DEFAULT_DATA_DIR / "sprout_dataset.csv"))
+    parser.add_argument("--embedllm_csv", type=str, default=str(DEFAULT_DATA_DIR / "embedllm_dataset.csv"))
+    # parser.add_argument("--mixinstruct_csv", type=str, default=str(DEFAULT_DATA_DIR / "mixinstruct_dataset.csv")) # 주석 처리
 
     parser.add_argument("--extra_args", type=str, default="", help="모든 스크립트에 공통으로 더 넘길 인자")
     args = parser.parse_args()
@@ -108,34 +103,35 @@ def main():
 
     exp_tag = f"exp{int(args.run)}"
 
+    # 실행할 알고리즘 목록
     targets = [
         ("base_line/2random_policy", "RAND"),
         ("base_line/3qucb", "Q_UCB"),
         ("base_line/4qths", "Q_THS"),
-        ("base_line/5qcb_epsilon", "QCB_eps"),
+        ("base_line/5cqb_epsilon", "CQB_eps"),
         ("train_by_model/routerbench", "AQCB"),
     ]
 
-    routerbench_data_path = Path(args.routerbench_data).expanduser()
-    if not routerbench_data_path.is_absolute():
-        routerbench_data_path = (BASE_DIR / routerbench_data_path).resolve()
-
+    # 데이터셋별 실행 설정
     dataset_spec = {
         "routerbench": {
             "script": "routerbench_train.py",
-            "dargs": ["--data", str(routerbench_data_path)],
+            "dargs": ["--data", args.routerbench_csv],
         },
         "sprout": {
             "script": "sprout_train.py",
-            "dargs": ["--data", str(args.sprout_data), "--hf_split", str(args.sprout_split)],
+            "dargs": ["--data", args.sprout_csv],
         },
         "embedllm": {
             "script": "embedllm_train.py",
-            "dargs": ["--data", str(args.embedllm_data), "--hf_split", str(args.embedllm_split)],
+            "dargs": ["--data", args.embedllm_csv],
         },
+        # "mixinstruct": {
+        #     "script": "mixinstruct_train.py",
+        #     "dargs": ["--data", args.mixinstruct_csv],
+        # },
     }
 
-    # 공통 args (lam_list는 nargs+라서 리스트로 펼쳐서 넣는다)
     common_args = [
         "--job_pool_size", str(args.job_pool_size),
         "--lam_list", *[str(x) for x in args.lam_list],
@@ -154,10 +150,6 @@ def main():
     print()
 
     for ds in args.datasets:
-        if ds not in dataset_spec:
-            print(f"[SKIP] unknown dataset={ds}")
-            continue
-
         script_name = dataset_spec[ds]["script"]
         ds_args = dataset_spec[ds]["dargs"]
 
@@ -168,20 +160,20 @@ def main():
         if not extra_has_seed:
             print(f"[Seed] base_seed={base_seed} + (run-1)={args.run-1} => final_seed={auto_seed}")
         else:
-            print("[Seed] extra_args에 --seed가 있어 자동 seed 주입을 건너뛴다")
+            print("[Seed] extra_args에 --seed가 있어 자동 seed 주입을 안 한다")
 
         for folder_path, output_name in targets:
-            if folder_path.startswith("train_by_model/"):
+            if folder_path == "train_by_model/routerbench":
                 target_folder = (BASE_DIR / "train_by_model" / ds).resolve()
             else:
                 target_folder = (BASE_DIR / folder_path).resolve()
 
             script_path = (target_folder / script_name).resolve()
+            
             if not _exists(script_path):
                 print(f"[SKIP] script not found: {script_path}")
                 continue
 
-            # 저장 경로: <save_root>/<dataset>/exp<run>/<algo>/
             current_output_dir = (save_root / ds / exp_tag / output_name).resolve()
             current_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,11 +185,9 @@ def main():
                 *ds_args,
             ]
 
-            # 자동 seed 주입
             if not extra_has_seed:
                 cmd += ["--seed", str(auto_seed)]
 
-            # 사용자 추가 인자
             cmd += extra_args
 
             print(f"\n--- Running: {ds}/{exp_tag}/{output_name} ---")
@@ -213,4 +203,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#python run_all.py ./result --run 1 --datasets routerbench

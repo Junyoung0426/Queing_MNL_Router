@@ -34,8 +34,8 @@ class QueueConfig:
     # Queue / Bandit (Online)
     # -----------------------------
     assort_K: int = 1
-    arrival_rate: float = 0.5
-    max_steps: int = 5000
+    arrival_rate: float = 0.55
+    max_steps: int = 10000
     # util -> r -> odds
     r_eps: float = 1e-6
     r_lo: float = 0.1
@@ -43,19 +43,12 @@ class QueueConfig:
 
     # unknown horizon schedule
     kappa: float =4.0
-    c1: float = 5.0
+    c1: float = 2.0
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
-<<<<<<< Updated upstream
-<<<<<<< HEAD
-    alpha_coef: float = 0.0001
-=======
     alpha_coef: float = 0.001
->>>>>>> c3f2a41 (Changes to be committed:)
-=======
-    alpha_coef: float = 0.01
->>>>>>> Stashed changes
+
 
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"

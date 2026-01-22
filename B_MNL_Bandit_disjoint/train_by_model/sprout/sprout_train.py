@@ -4,161 +4,108 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import os
 import sys
 import argparse
-import numpy as np
+import importlib.util
 import pandas as pd
-from typing import Tuple, List, Dict, Optional, Any
-current_dir = os.path.dirname(os.path.abspath(__file__))          # .../train_by_model/embedllm
-parent_dir = os.path.dirname(current_dir)                         # .../train_by_model
-root_dir = os.path.dirname(parent_dir)                            # .../B_MNL_Bandit_disjoint
+from typing import Tuple, List, Dict, Optional
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+root_dir = os.path.dirname(parent_dir)
+project_dir = os.path.dirname(root_dir)
+data_dir = os.path.join(project_dir, "Data")
+DEFAULT_DATA = os.path.join(data_dir, "sprout_dataset.csv")
+
 
 for p in (current_dir, root_dir):
     while p in sys.path:
         sys.path.remove(p)
 
-sys.path.insert(0, current_dir)  
-sys.path.insert(1, root_dir)      
+sys.path.insert(0, current_dir)
+sys.path.insert(1, root_dir)
 
-sys.modules.pop("queue_config", None)
-sys.modules.pop("train", None)
 
+def _load_module_from_path(name: str, path: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load spec: {name} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+queue_config_path = os.path.join(current_dir, "queue_config.py")
+train_path = os.path.join(root_dir, "train.py")
+
+if not os.path.exists(queue_config_path):
+    raise FileNotFoundError(queue_config_path)
+if not os.path.exists(train_path):
+    raise FileNotFoundError(train_path)
+
+_load_module_from_path("queue_config", queue_config_path)
+_load_module_from_path("train", train_path)
 
 from train import add_common_args, run_pipeline, set_full_determinism
 from queue_config import QueueConfig
 
-def _parse_size_b(
-    model_name: str,
-    default: float = 7.0,
-    use_moe_effective: bool = True,
-    moe_active_experts: int = 2,
-) -> float:
-    """
-    모델명에서 13b, 7B, 8x7B 같은 패턴을 파싱해서 B 단위 규모를 만든다.
-    MoE(8x7B)는 total(56B) 대신 active expert 기반(예: 2*7=14B)으로 둘 수도 있다.
-    """
-    import re
 
-    s = str(model_name).lower()
-
-    # MoE: 8x7B, 8×7B
-    m = re.search(r"(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*b", s)
-    if m:
-        n_exp = float(m.group(1))
-        exp_b = float(m.group(2))
-        if use_moe_effective:
-            return float(moe_active_experts) * exp_b
-        return n_exp * exp_b
-
-    # Dense: 7B, 13b
-    m = re.search(r"(\d+(?:\.\d+)?)\s*b", s)
-    if m:
-        return float(m.group(1))
-
-    return float(default)
+def infer_models_and_cost_map(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str]]:
+    base = {"sample_id", "prompt", "eval_name", "oracle_model_to_route_to", "oracle_model"}
+    models = [c for c in df.columns if ("|" not in c) and (c not in base)]
+    cost_map = {c.split("|")[0]: c for c in df.columns if str(c).endswith("|total_cost")}
+    return models, cost_map
 
 
-def load_sprout_hf(
-    dataset_id: str,
-    split: str,
+def load_routerbench_like_csv(
+    path: str,
     use_cost: bool,
     models_fixed: Optional[List[str]] = None,
-    max_rows: Optional[int] = None,
-    # compute proxy knobs
-    rho_out: float = 1.0,
-    denom_C: float = 1e6,
-    default_B: float = 7.0,
-    use_moe_effective: bool = True,
-    moe_active_experts: int = 2,
 ) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
-    """
-    SPROUT wide table 변환.
+    df = pd.read_csv(path)
 
-    perf: d["score"]
-    cost (compute proxy): ((in_tok + rho*out_tok) * B(model)) / denom_C
-    """
-    from datasets import load_dataset  # pip install datasets
+    if "prompt" not in df.columns:
+        raise ValueError("df에 'prompt' 컬럼이 필요하다")
 
-    ds = load_dataset(dataset_id, split=split)
-    meta_cols = {"key", "dataset", "dataset_level", "dataset_idx", "prompt", "golden_answer"}
-    model_cols = [c for c in ds.column_names if c not in meta_cols]
+    models_all, cost_map_all = infer_models_and_cost_map(df)
 
-    models = list(models_fixed) if models_fixed is not None else sorted(model_cols)
+    if models_fixed is None:
+        models = models_all
+    else:
+        models = list(models_fixed)
+        missing = [m for m in models if m not in models_all]
+        if missing:
+            raise ValueError(f"models_fixed 중 score 컬럼이 없는 모델이 있다: {missing}")
 
-    # 모델별 B proxy를 미리 만든다
-    model_B = {
-        m: _parse_size_b(
-            m,
-            default=default_B,
-            use_moe_effective=use_moe_effective,
-            moe_active_experts=moe_active_experts,
-        )
-        for m in models
-    }
+    if use_cost:
+        missing_cost = [m for m in models if m not in cost_map_all]
+        if missing_cost:
+            raise ValueError(f"use_cost=True인데 |total_cost 컬럼이 없는 모델이 있다: {missing_cost}")
+        cost_map = {m: cost_map_all[m] for m in models}
+    else:
+        cost_map = {}
 
-    rows: List[Dict[str, Any]] = []
-    for i, ex in enumerate(ds):
-        if max_rows is not None and len(rows) >= int(max_rows):
-            break
+    keep = []
+    for c in ["sample_id", "prompt", "eval_name"]:
+        if c in df.columns:
+            keep.append(c)
 
-        row: Dict[str, Any] = {
-            "sample_id": ex.get("key", i),
-            "prompt": str(ex.get("prompt", "")),
-            "eval_name": str(ex.get("dataset", "sprout")),
-        }
+    keep += models
+    if use_cost:
+        keep += [cost_map[m] for m in models]
 
-        ok = True
-        for m in models:
-            d = ex.get(m, None)
-            if not isinstance(d, dict):
-                ok = False
-                break
+    seen = set()
+    keep = [c for c in keep if not (c in seen or seen.add(c))]
 
-            score = d.get("score", None)
-            if score is None:
-                ok = False
-                break
-            row[m] = float(score)
-
-            if use_cost:
-                in_tok = d.get("num_input_tokens", None)
-                out_tok = d.get("num_output_tokens", None)
-                if in_tok is None or out_tok is None:
-                    ok = False
-                    break
-
-                B = float(model_B[m])
-                raw = (float(in_tok) + float(rho_out) * float(out_tok)) * B
-                row[f"{m}|total_cost"] = raw / float(denom_C)
-
-        if ok:
-            rows.append(row)
-
-    df = pd.DataFrame(rows).reset_index(drop=True)
-    need = ["prompt"] + models + ([f"{m}|total_cost" for m in models] if use_cost else [])
-    df = df.dropna(subset=need).reset_index(drop=True)
-    if len(df) == 0:
-        raise ValueError("[SPROUT] 0 rows after enforcing completeness")
-
-    cost_map = {m: f"{m}|total_cost" for m in models} if use_cost else {}
+    df = df[keep].copy()
     return df, models, cost_map
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Train on SPROUT(HF) with common pipeline (compute-proxy cost)")
-    ap.add_argument("--data", type=str, default="CARROT-LLM-Routing/SPROUT-o3mini")
-    ap.add_argument("--hf_split", type=str, default="train")
-    ap.add_argument("--models", type=str, nargs="+", default=None)
-    ap.add_argument("--max_rows", type=int, default=None)
-
-    # compute proxy knobs
-    ap.add_argument("--rho_out", type=float, default=1.0)
-    ap.add_argument("--denom_C", type=float, default=1e6)
-    ap.add_argument("--default_B", type=float, default=7.0)
-    ap.add_argument("--use_moe_effective", type=int, default=1)
-    ap.add_argument("--moe_active_experts", type=int, default=2)
-
+    ap = argparse.ArgumentParser(description="Train on RouterBench-like CSV with common pipeline")
+    ap.add_argument("--data", type=str, default=DEFAULT_DATA)
     add_common_args(ap)
     return ap.parse_args()
 
@@ -166,6 +113,7 @@ def parse_args():
 def main():
     args = parse_args()
     config = QueueConfig()
+
     if getattr(args, "seed", None) is not None:
         config.seed = int(args.seed)
     if getattr(args, "device", None) is not None:
@@ -174,18 +122,8 @@ def main():
         config.embedder_model = str(args.embedder_model)
 
     set_full_determinism(int(config.seed))
-    df, models, cost_map = load_sprout_hf(
-        dataset_id=str(args.data),
-        split=str(args.hf_split),
-        use_cost=bool(config.use_cost),
-        models_fixed=list(args.models) if args.models is not None else None,
-        max_rows=args.max_rows,
-        rho_out=float(args.rho_out),
-        denom_C=float(args.denom_C),
-        default_B=float(args.default_B),
-        use_moe_effective=bool(int(args.use_moe_effective)),
-        moe_active_experts=int(args.moe_active_experts),
-    )
+
+    df, models, cost_map = load_routerbench_like_csv(args.data, use_cost=bool(config.use_cost))
     run_pipeline(df, models, cost_map, args, config)
 
 

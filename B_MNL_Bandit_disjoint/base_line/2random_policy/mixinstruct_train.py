@@ -11,86 +11,64 @@ script_name = os.path.basename(__file__)
 dataset_name = script_name.split("_train.py")[0]
 
 if not dataset_name or dataset_name == script_name:
-    raise ValueError(f"Filename does not match '_train.py' format: {script_name}")
-
-print(f"[Info] Detected dataset name from filename: '{dataset_name}'")
+    raise ValueError(f"Filename format error: {script_name}")
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 base_line_dir = os.path.dirname(cur_dir)
 root_dir = os.path.dirname(base_line_dir)
+project_root = os.path.dirname(root_dir)
+data_dir = os.path.join(project_root, "Data")
 
 target_config_dir = os.path.join(root_dir, "train_by_model", dataset_name)
-
 if not os.path.exists(target_config_dir):
-    raise FileNotFoundError(f"Config folder not found: {target_config_dir}")
+    raise FileNotFoundError(f"Config dir not found: {target_config_dir}")
 
 common_dir = os.path.join(base_line_dir, "_common")
+random_env_dir = cur_dir
 
 sys.path.insert(0, target_config_dir)
 sys.path.insert(1, common_dir)
-sys.path.insert(2, root_dir)
+sys.path.insert(2, random_env_dir)
+sys.path.insert(3, root_dir)
 
 sys.modules.pop("queue_config", None)
+sys.modules.pop("queue_env", None)
 
 from queue_config import QueueConfig
 from baseline_common import add_common_args, set_full_determinism, run_pipeline_with_env
-from baseline_loaders import load_mixinstruct_hf
+from baseline_loaders import load_standardized_csv
 
 try:
     from queue_env import queue_env as all_random_queue_env
 except ImportError:
-    sys.path.append(root_dir)
-    from queue_env import queue_env as all_random_queue_env
-
+    raise ImportError(f"Cannot find queue_env.py in {random_env_dir}")
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Baseline (2) all-rand on MixInstruct(HF)")
-    ap.add_argument("--data", type=str, default="llm-blender/mix-instruct")
-    ap.add_argument("--hf_split", type=str, default="train")
-    ap.add_argument("--metric", type=str, default="bertscore")
-    ap.add_argument("--max_rows", type=int, default=None)
-    ap.add_argument("--rho_out", type=float, default=1.0)
-    ap.add_argument("--denom_C", type=float, default=1e6)
-    ap.add_argument("--token_mode", type=str, default="chars4", choices=["chars4", "whitespace"])
-    ap.add_argument("--default_B", type=float, default=7.0)
-    ap.add_argument("--use_moe_effective", type=int, default=1)
-    ap.add_argument("--moe_active_experts", type=int, default=2)
+    ap = argparse.ArgumentParser()
+    default_path = os.path.join(data_dir, "mixinstruct_dataset.csv")
+    ap.add_argument("--data", type=str, default=default_path)
     add_common_args(ap)
     return ap.parse_args()
 
-
 def main():
     args = parse_args()
-    
-    cfg = QueueConfig()
-
-    import queue_config as qc
-    print(f"[Info] Loaded QueueConfig from: {qc.__file__}")
+    config = QueueConfig()
 
     if getattr(args, "seed", None) is not None:
-        cfg.seed = int(args.seed)
+        config.seed = int(args.seed)
     if getattr(args, "device", None) is not None:
-        cfg.device = str(args.device)
+        config.device = str(args.device)
     if getattr(args, "embedder_model", None) is not None:
-        cfg.embedder_model = str(args.embedder_model)
+        config.embedder_model = str(args.embedder_model)
 
-    cfg.explore_enabled = False
-    cfg.debug_verbose = False
+    config.explore_enabled = False
+    config.debug_verbose = False
 
-    set_full_determinism(int(cfg.seed))
+    set_full_determinism(int(config.seed))
 
-    df, models, cost_map = load_mixinstruct_hf(
-        dataset_id=str(args.data),
-        split=str(args.hf_split),
-        metric=str(args.metric),
-        use_cost=bool(cfg.use_cost),
-        max_rows=args.max_rows,
-        rho_out=float(args.rho_out),
-        denom_C=float(args.denom_C),
-        token_mode=str(args.token_mode),
-        default_B=float(args.default_B),
-        use_moe_effective=bool(int(args.use_moe_effective)),
-        moe_active_experts=int(args.moe_active_experts),
+    df, models, cost_map = load_standardized_csv(
+        path=str(args.data),
+        use_cost=bool(config.use_cost)
     )
     
     run_pipeline_with_env(
@@ -98,10 +76,9 @@ def main():
         models, 
         cost_map, 
         args, 
-        cfg, 
+        config, 
         baseline_queue_env_func=all_random_queue_env
     )
-
 
 if __name__ == "__main__":
     main()

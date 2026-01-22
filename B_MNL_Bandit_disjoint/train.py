@@ -571,6 +571,7 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             dep_router_mean = _safe_mean(logs.get("dep_prob_router_hist", []))
 
         summary = {
+            "seed": int(getattr(config, "seed", 0)),
             "lam_cost": float(lam),
             "avg_regret": float(avg_reg),
             "final_Q_gap": float(Q_gap),
