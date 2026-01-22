@@ -33,6 +33,8 @@ sys.path.insert(2, root_dir)
 sys.modules.pop("queue_config", None)
 
 from queue_config import QueueConfig
+
+sys.path.insert(0, cur_dir)
 from baseline_common import add_common_args, set_full_determinism, run_pipeline_with_env
 from baseline_loaders import load_routerbench_pkl
 
