@@ -435,11 +435,11 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         set_full_determinism(int(getattr(config, "seed", 0)))
 
     if b_type == "none":
-        print("\n[Auto-Config] b_type='none' -> Offline split 비활성(Pure Online), B pretrain skip")
+        print("\n[Auto-Config] b_type='none' -> Offline split off(Pure Online), B pretrain skip")
         config.offline_total_ratio = 0.0
         config.offline_seed_min_per_model = 0
     else:
-        print(f"\n[Auto-Config] b_type='{b_type}' -> Offline split 사용(ratio={getattr(config, 'offline_total_ratio', None)})")
+        print(f"\n[Auto-Config] b_type='{b_type}' -> Offline split on (ratio={getattr(config, 'offline_total_ratio', None)})")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -448,7 +448,6 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
 
     models = sorted(list(models))
 
-    # dropna + orig_row 보존
     df2 = _dropna_required(df, models, cost_map, bool(getattr(config, "use_cost", True)))
 
     df_train, _ = train_test_split(df2, test_size=float(getattr(config, "test_size", 0.2)), random_state=int(getattr(config, "seed", 0)), shuffle=True)
