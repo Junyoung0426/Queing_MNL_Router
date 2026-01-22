@@ -50,7 +50,7 @@ def set_paper_style():
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Plot regrets for multiple algorithms under a root directory")
+    ap = argparse.ArgumentParser(description="Plot regrets")
     ap.add_argument("--root_dir", type=str, required=True)
     ap.add_argument("--lambdas", type=float, nargs="*", default=None)
     ap.add_argument("--max_steps", type=int, default=None)
@@ -59,6 +59,16 @@ def parse_args():
     ap.add_argument("--qgap_abs", action="store_true")
     ap.add_argument("--fig_w", type=float, default=6.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
+
+    # NEW
+    ap.add_argument(
+        "--mode",
+        type=str,
+        default="per_lam",
+        choices=["per_lam", "per_alg"],
+        help="per_lam: compare algorithms for each lambda (default). per_alg: compare lambdas for each algorithm.",
+    )
+
     return ap.parse_args()
 
 
@@ -147,34 +157,27 @@ def read_series(reg_path: Path, q_path: Path, max_steps, qgap_abs: bool):
     if qgap_abs:
         q_diff = np.abs(q_diff)
 
-    rounds = np.arange(1, L + 1)
+    t = np.arange(1, L + 1)
     q_cum = np.cumsum(q_diff)
-    return rounds, std_reg, q_diff, q_cum
+    return t, std_reg, q_diff, q_cum
 
 
 def _paper_axes(ax):
     ax.set_facecolor("white")
-
     for side in ["top", "right", "bottom", "left"]:
         ax.spines[side].set_visible(True)
         ax.spines[side].set_linewidth(1.0)
-
     ax.tick_params(direction="out", width=1.0, length=4.0)
-
     ax.xaxis.grid(False)
     ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.4)
 
 
 def _rename_for_legend(name: str) -> str:
     s = str(name)
-
     if s == "AQCB-CL":
         return "AQCB-CL(ours)"
-
-    # use function replacement to avoid re replacement backslash parsing
     s = re.sub(r"(?i)_eps\b", lambda _: r"-$\epsilon$", s)
     s = re.sub(r"(?i)\beps\b", lambda _: r"$\epsilon$", s)
-
     return s
 
 
@@ -183,7 +186,6 @@ def _rename_for_filename(name: str) -> str:
     s = re.sub(r"(?i)_eps\b", lambda _: "ε", s)
     s = re.sub(r"(?i)\beps\b", lambda _: "ε", s)
     return s
-
 
 
 def _bold_legend_label(ax, target_label: str):
@@ -222,90 +224,140 @@ def main():
     if args.qgap_abs:
         filename_suffix += "_absQ"
 
-    for lam in target_lambdas:
-        series = {}
-        for alg, runs in alg_data.items():
-            if lam not in runs:
-                continue
-            reg_path = runs[lam]["reg_path"]
-            q_path = runs[lam]["q_path"]
-            rounds, std_reg, q_diff, q_cum = read_series(
-                reg_path=reg_path,
-                q_path=q_path,
-                max_steps=args.max_steps,
-                qgap_abs=bool(args.qgap_abs),
-            )
-            series[alg] = {"rounds": rounds, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
+    # ------------------------------------------------------------
+    # mode=per_lam: existing behavior (one figure per lambda)
+    # ------------------------------------------------------------
+    if args.mode == "per_lam":
+        for lam in target_lambdas:
+            series = {}
+            for alg, runs in alg_data.items():
+                if lam not in runs:
+                    continue
+                reg_path = runs[lam]["reg_path"]
+                q_path = runs[lam]["q_path"]
+                t, std_reg, q_diff, q_cum = read_series(reg_path, q_path, args.max_steps, bool(args.qgap_abs))
+                series[alg] = {"t": t, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
 
-        if not series:
-            print(f"[Warn] lambda={lam} has no data across algorithms, skipping")
+            if not series:
+                print(f"[Warn] lambda={lam} has no data across algorithms, skipping")
+                continue
+
+            alg_names = sorted(series.keys())
+            lam_tag = f"{lam:.2f}"
+
+            if 0 < len(alg_names) <= 3:
+                prefix_str = "_vs_".join(_rename_for_filename(a) for a in alg_names)
+            else:
+                prefix_str = "ALLALG"
+
+            fig = plt.figure(figsize=(args.fig_w, args.fig_h))
+            ax = fig.gca()
+            for alg in alg_names:
+                d = series[alg]
+                ax.plot(d["t"], d["std_reg"], label=_rename_for_legend(alg))
+            ax.set_xlabel("t (time)")
+            ax.set_ylabel("Cumulative Regret (lower is better)")
+            _paper_axes(ax)
+            ax.legend(loc="upper left")
+            _bold_legend_label(ax, "AQCB-CL(ours)")
+            fig.tight_layout()
+            out_std = plots_dir / f"{prefix_str}_standard_regret_lam_{lam_tag}{filename_suffix}.png"
+            fig.savefig(out_std)
+            plt.close(fig)
+
+            fig = plt.figure(figsize=(args.fig_w, args.fig_h))
+            ax = fig.gca()
+            for alg in alg_names:
+                d = series[alg]
+                ax.plot(d["t"], d["q_diff"], label=_rename_for_legend(alg))
+            ax.axhline(0, color="black", linestyle="--", linewidth=1.0)
+            ax.set_xlabel("t (time)")
+            ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
+            _paper_axes(ax)
+            ax.legend(loc="upper left")
+            _bold_legend_label(ax, "AQCB-CL(ours)")
+            fig.tight_layout()
+            out_q = plots_dir / f"{prefix_str}_queue_gap_lam_{lam_tag}{filename_suffix}.png"
+            fig.savefig(out_q)
+            plt.close(fig)
+
+            fig = plt.figure(figsize=(args.fig_w, args.fig_h))
+            ax = fig.gca()
+            for alg in alg_names:
+                d = series[alg]
+                ax.plot(d["t"], d["q_cum"], label=_rename_for_legend(alg))
+            ax.set_xlabel("t (time)")
+            ax.set_ylabel(r"Cumulative $|Q_r(s)-Q_o(s)|$" if args.qgap_abs else r"Cumulative $(Q_r(s)-Q_o(s))$")
+            _paper_axes(ax)
+            ax.legend(loc="upper left")
+            _bold_legend_label(ax, "AQCB-CL(ours)")
+            fig.tight_layout()
+            out_qc = plots_dir / f"{prefix_str}_queue_cum_lam_{lam_tag}{filename_suffix}.png"
+            fig.savefig(out_qc)
+            plt.close(fig)
+
+        print("\n[Done] All plots generated.")
+        return
+
+    # ------------------------------------------------------------
+    # mode=per_alg: NEW behavior (one figure per algorithm)
+    # each figure overlays multiple lambdas
+    # ------------------------------------------------------------
+    for alg, runs in sorted(alg_data.items(), key=lambda kv: kv[0]):
+        lams_here = sorted(set(runs.keys()) & set(target_lambdas))
+        if not lams_here:
             continue
 
-        alg_names = sorted(series.keys())
-        lam_tag = f"{lam:.2f}"
+        alg_label = _rename_for_legend(alg)
+        alg_file = _rename_for_filename(alg)
 
-        if 0 < len(alg_names) <= 3:
-            prefix_str = "_vs_".join(_rename_for_filename(a) for a in alg_names)
-        else:
-            prefix_str = "ALLALG"
+        series_lam = {}
+        for lam in lams_here:
+            reg_path = runs[lam]["reg_path"]
+            q_path = runs[lam]["q_path"]
+            t, std_reg, q_diff, q_cum = read_series(reg_path, q_path, args.max_steps, bool(args.qgap_abs))
+            series_lam[lam] = {"t": t, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
 
-        # 1) Standard regret
+        # standard regret: lambdas as lines
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
-        for alg in alg_names:
-            d = series[alg]
-            label = _rename_for_legend(alg)
-            ax.plot(d["rounds"], d["std_reg"], label=label)
+        for lam in lams_here:
+            d = series_lam[lam]
+            ax.plot(d["t"], d["std_reg"], label=f"$\\lambda={lam:.2f}$")
         ax.set_xlabel("t (time)")
         ax.set_ylabel("Cumulative Regret (lower is better)")
         _paper_axes(ax)
         ax.legend(loc="upper left")
-        _bold_legend_label(ax, "AQCB-CL(ours)")
         fig.tight_layout()
-        out_std = plots_dir / f"{prefix_str}_standard_regret_lam_{lam_tag}{filename_suffix}.png"
+        out_std = plots_dir / f"{alg_file}_standard_regret_all_lams{filename_suffix}.png"
         fig.savefig(out_std)
         plt.close(fig)
-        print(f"[Saved] {out_std}")
 
-        # 2) Instantaneous Q-gap
+        # q-gap
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
-        for alg in alg_names:
-            d = series[alg]
-            label = _rename_for_legend(alg)
-            ax.plot(d["rounds"], d["q_diff"], label=label)
+        for lam in lams_here:
+            d = series_lam[lam]
+            ax.plot(d["t"], d["q_diff"], label=f"$\\lambda={lam:.2f}$")
         ax.axhline(0, color="black", linestyle="--", linewidth=1.0)
         ax.set_xlabel("t (time)")
         ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
         _paper_axes(ax)
         ax.legend(loc="upper left")
-        _bold_legend_label(ax, "AQCB-CL(ours)")
         fig.tight_layout()
-        out_q = plots_dir / f"{prefix_str}_queue_gap_lam_{lam_tag}{filename_suffix}.png"
+        out_q = plots_dir / f"{alg_file}_queue_gap_all_lams{filename_suffix}.png"
         fig.savefig(out_q)
         plt.close(fig)
-        print(f"[Saved] {out_q}")
 
-        # 3) Cumulative Q-gap
-        fig = plt.figure(figsize=(args.fig_w, args.fig_h))
-        ax = fig.gca()
-        for alg in alg_names:
-            d = series[alg]
-            label = _rename_for_legend(alg)
-            ax.plot(d["rounds"], d["q_cum"], label=label)
-        ax.set_xlabel("t (time)")
-        ax.set_ylabel(r"Cumulative $|Q_r(s)-Q_o(s)|$" if args.qgap_abs else r"Cumulative $(Q_r(s)-Q_o(s))$")
-        _paper_axes(ax)
-        ax.legend(loc="upper left")
-        _bold_legend_label(ax, "AQCB-CL(ours)")
-        fig.tight_layout()
-        out_qc = plots_dir / f"{prefix_str}_queue_cum_lam_{lam_tag}{filename_suffix}.png"
-        fig.savefig(out_qc)
-        plt.close(fig)
-        print(f"[Saved] {out_qc}")
+        print(f"[Saved] {alg_label} -> {out_std.name}, {out_q.name}, {out_qc.name}")
 
     print("\n[Done] All plots generated.")
 
 
 if __name__ == "__main__":
     main()
+#python3 plot_all.py --root_dir result2/routerbench/exp1 --include AQCB-CL --mode per_alg
+#python3 plot_all.py --root_dir result2/routerbench/exp1 --include AQCB-CL --mode per_alg --lambdas 0.0 0.1 1.0
+#python3 plot_all.py --root_dir result2/routerbench/exp1 --mode per_lam
+
+
