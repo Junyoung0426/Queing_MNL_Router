@@ -43,7 +43,7 @@ class QueueConfig:
 
     # unknown horizon schedule
     kappa: float =4.0
-    c1: float = 8.0 #0.55 4 #0.5 8 
+    c1: float = 4.0 #0.55 4 #0.5 8 
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
