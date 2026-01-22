@@ -104,7 +104,7 @@ def _format_ar_tag(x):
 def main():
     BASE_DIR = Path(__file__).resolve().parent
 
-    DEFAULT_DATA_DIR = Path("/home/sjy990426/Desktop/LLM_Router/Queing_MNL_Router/Data")
+    DEFAULT_DATA_DIR = (BASE_DIR.parent / "Data").resolve()
 
     parser = argparse.ArgumentParser(description="Run training sequentially (routerbench/sprout/embedllm).")
     parser.add_argument("save_path", type=str, help="Root output directory (e.g., ./result)")
