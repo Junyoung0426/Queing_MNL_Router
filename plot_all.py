@@ -9,8 +9,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-LAM_RE = re.compile(r"regret_history_lam_([0-9]+\.[0-9]+)\.csv$")
-QLAM_RE = re.compile(r"Qregret_history_lam_([0-9]+\.[0-9]+)\.csv$")
+LAM_RE = re.compile(r"regret_history_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
+QLAM_RE = re.compile(r"Qregret_history_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
 
 
 def set_paper_style():
@@ -40,7 +40,7 @@ def set_paper_style():
         "legend.framealpha": 1.0,
         "legend.edgecolor": "black",
 
-        "lines.linewidth": 2.0,
+        "lines.linewidth": 1.2,
 
         "axes.grid": False,
 
@@ -60,15 +60,13 @@ def parse_args():
     ap.add_argument("--fig_w", type=float, default=6.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
 
-    # NEW
     ap.add_argument(
         "--mode",
         type=str,
         default="per_lam",
         choices=["per_lam", "per_alg"],
-        help="per_lam: compare algorithms for each lambda (default). per_alg: compare lambdas for each algorithm.",
+        help="per_lam: one plot per lambda comparing algorithms. per_alg: one plot per algorithm overlaying lambdas.",
     )
-
     return ap.parse_args()
 
 
@@ -174,8 +172,8 @@ def _paper_axes(ax):
 
 def _rename_for_legend(name: str) -> str:
     s = str(name)
-    if s == "AQCB-CL":
-        return "AQCB-CL(ours)"
+    if s == "ACQB-CL":
+        return "ACQB-CL(ours)"
     s = re.sub(r"(?i)_eps\b", lambda _: r"-$\epsilon$", s)
     s = re.sub(r"(?i)\beps\b", lambda _: r"$\epsilon$", s)
     return s
@@ -195,6 +193,18 @@ def _bold_legend_label(ax, target_label: str):
     for txt in leg.get_texts():
         if txt.get_text() == target_label:
             txt.set_fontweight("bold")
+
+
+def _annotate_lambda(ax, lam: float):
+    ax.text(
+        0.98, 0.98,
+        rf"$\lambda={lam:.2f}$",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="black", linewidth=0.8, alpha=1.0),
+    )
 
 
 def main():
@@ -224,9 +234,9 @@ def main():
     if args.qgap_abs:
         filename_suffix += "_absQ"
 
-    # ------------------------------------------------------------
-    # mode=per_lam: existing behavior (one figure per lambda)
-    # ------------------------------------------------------------
+    # -------------------------
+    # per_lam: compare algorithms at fixed lambda
+    # -------------------------
     if args.mode == "per_lam":
         for lam in target_lambdas:
             series = {}
@@ -259,7 +269,8 @@ def main():
             ax.set_ylabel("Cumulative Regret (lower is better)")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "AQCB-CL(ours)")
+            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_std = plots_dir / f"{prefix_str}_standard_regret_lam_{lam_tag}{filename_suffix}.png"
             fig.savefig(out_std)
@@ -270,43 +281,32 @@ def main():
             for alg in alg_names:
                 d = series[alg]
                 ax.plot(d["t"], d["q_diff"], label=_rename_for_legend(alg))
-            ax.axhline(0, color="black", linestyle="--", linewidth=1.0)
+            ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
             ax.set_xlabel("t (time)")
             ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "AQCB-CL(ours)")
+            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_q = plots_dir / f"{prefix_str}_queue_gap_lam_{lam_tag}{filename_suffix}.png"
             fig.savefig(out_q)
             plt.close(fig)
 
-            fig = plt.figure(figsize=(args.fig_w, args.fig_h))
-            ax = fig.gca()
-            for alg in alg_names:
-                d = series[alg]
-                ax.plot(d["t"], d["q_cum"], label=_rename_for_legend(alg))
-            ax.set_xlabel("t (time)")
-            ax.set_ylabel(r"Cumulative $|Q_r(s)-Q_o(s)|$" if args.qgap_abs else r"Cumulative $(Q_r(s)-Q_o(s))$")
-            _paper_axes(ax)
-            ax.legend(loc="upper left")
-            _bold_legend_label(ax, "AQCB-CL(ours)")
-            fig.tight_layout()
-            out_qc = plots_dir / f"{prefix_str}_queue_cum_lam_{lam_tag}{filename_suffix}.png"
-            fig.savefig(out_qc)
-            plt.close(fig)
 
         print("\n[Done] All plots generated.")
         return
 
-    # ------------------------------------------------------------
-    # mode=per_alg: NEW behavior (one figure per algorithm)
-    # each figure overlays multiple lambdas
-    # ------------------------------------------------------------
+    # -------------------------
+    # per_alg: overlay lambdas for each algorithm
+    # -------------------------
+    any_plotted = False
     for alg, runs in sorted(alg_data.items(), key=lambda kv: kv[0]):
         lams_here = sorted(set(runs.keys()) & set(target_lambdas))
         if not lams_here:
             continue
+
+        any_plotted = True
 
         alg_label = _rename_for_legend(alg)
         alg_file = _rename_for_filename(alg)
@@ -318,12 +318,11 @@ def main():
             t, std_reg, q_diff, q_cum = read_series(reg_path, q_path, args.max_steps, bool(args.qgap_abs))
             series_lam[lam] = {"t": t, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
 
-        # standard regret: lambdas as lines
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
         for lam in lams_here:
             d = series_lam[lam]
-            ax.plot(d["t"], d["std_reg"], label=f"$\\lambda={lam:.2f}$")
+            ax.plot(d["t"], d["std_reg"], label=rf"$\lambda={lam:.2f}$")
         ax.set_xlabel("t (time)")
         ax.set_ylabel("Cumulative Regret (lower is better)")
         _paper_axes(ax)
@@ -333,13 +332,12 @@ def main():
         fig.savefig(out_std)
         plt.close(fig)
 
-        # q-gap
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
         for lam in lams_here:
             d = series_lam[lam]
-            ax.plot(d["t"], d["q_diff"], label=f"$\\lambda={lam:.2f}$")
-        ax.axhline(0, color="black", linestyle="--", linewidth=1.0)
+            ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
+        ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel("t (time)")
         ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
         _paper_axes(ax)
@@ -349,15 +347,31 @@ def main():
         fig.savefig(out_q)
         plt.close(fig)
 
+        fig = plt.figure(figsize=(args.fig_w, args.fig_h))
+        ax = fig.gca()
+        for lam in lams_here:
+            d = series_lam[lam]
+            ax.plot(d["t"], d["q_cum"], label=rf"$\lambda={lam:.2f}$")
+        ax.set_xlabel("t (time)")
+        ax.set_ylabel(r"Cumulative $|Q_r(s)-Q_o(s)|$" if args.qgap_abs else r"Cumulative $(Q_r(s)-Q_o(s))$")
+        _paper_axes(ax)
+        ax.legend(loc="upper left")
+        fig.tight_layout()
+        out_qc = plots_dir / f"{alg_file}_queue_cum_all_lams{filename_suffix}.png"
+        fig.savefig(out_qc)
+        plt.close(fig)
+
         print(f"[Saved] {alg_label} -> {out_std.name}, {out_q.name}, {out_qc.name}")
+
+    if not any_plotted:
+        print("[Warn] no plots generated in per_alg mode. check --include name and whether regret_history_lam_*.csv exists.")
 
     print("\n[Done] All plots generated.")
 
 
 if __name__ == "__main__":
     main()
-#python3 plot_all.py --root_dir result2/routerbench/exp1 --include AQCB-CL --mode per_alg
-#python3 plot_all.py --root_dir result2/routerbench/exp1 --include AQCB-CL --mode per_alg --lambdas 0.0 0.1 1.0
-#python3 plot_all.py --root_dir result2/routerbench/exp1 --mode per_lam
-
-
+#실행 예시(ACQB-CL 하나에서 람다 여러 개 겹치기)
+#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --include ACQB-CL --mode per_alg
+#특정 람다만 겹치기
+#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --include ACQB-CL --mode per_alg
