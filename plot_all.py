@@ -57,7 +57,7 @@ def parse_args():
     ap.add_argument("--include", type=str, nargs="*", default=None)
     ap.add_argument("--exclude", type=str, nargs="*", default=["plots"])
     ap.add_argument("--qgap_abs", action="store_true")
-    ap.add_argument("--fig_w", type=float, default=6.0)
+    ap.add_argument("--fig_w", type=float, default=4.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
 
     ap.add_argument(
