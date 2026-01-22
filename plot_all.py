@@ -57,7 +57,7 @@ def parse_args():
     ap.add_argument("--include", type=str, nargs="*", default=None)
     ap.add_argument("--exclude", type=str, nargs="*", default=["plots"])
     ap.add_argument("--qgap_abs", action="store_true")
-    ap.add_argument("--fig_w", type=float, default=4.0)
+    ap.add_argument("--fig_w", type=float, default=5.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
 
     ap.add_argument(
@@ -339,7 +339,7 @@ def main():
             ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
         ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel("t (time)")
-        ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
+        ax.set_ylabel(r"$Q_r(t)-Q_o(t)$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
         _paper_axes(ax)
         ax.legend(loc="upper left")
         fig.tight_layout()
@@ -347,21 +347,8 @@ def main():
         fig.savefig(out_q)
         plt.close(fig)
 
-        fig = plt.figure(figsize=(args.fig_w, args.fig_h))
-        ax = fig.gca()
-        for lam in lams_here:
-            d = series_lam[lam]
-            ax.plot(d["t"], d["q_cum"], label=rf"$\lambda={lam:.2f}$")
-        ax.set_xlabel("t (time)")
-        ax.set_ylabel(r"Cumulative $|Q_r(s)-Q_o(s)|$" if args.qgap_abs else r"Cumulative $(Q_r(s)-Q_o(s))$")
-        _paper_axes(ax)
-        ax.legend(loc="upper left")
-        fig.tight_layout()
-        out_qc = plots_dir / f"{alg_file}_queue_cum_all_lams{filename_suffix}.png"
-        fig.savefig(out_qc)
-        plt.close(fig)
 
-        print(f"[Saved] {alg_label} -> {out_std.name}, {out_q.name}, {out_qc.name}")
+        print(f"[Saved] {alg_label} -> {out_std.name}, {out_q.name}")
 
     if not any_plotted:
         print("[Warn] no plots generated in per_alg mode. check --include name and whether regret_history_lam_*.csv exists.")
