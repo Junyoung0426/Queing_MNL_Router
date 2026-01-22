@@ -8,6 +8,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import sys
+import subprocess
 
 LAM_RE = re.compile(r"regret_history_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
 QLAM_RE = re.compile(r"Qregret_history_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
@@ -185,7 +187,7 @@ def main():
         ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
     ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("t (time)")
-    ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
+    ax.set_ylabel(r"$Q_r(t)-Q_o(t)$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
     _paper_axes(ax)
     ax.legend(loc="upper left")
     fig.tight_layout()

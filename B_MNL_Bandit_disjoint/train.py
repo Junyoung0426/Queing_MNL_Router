@@ -6,6 +6,7 @@ import json
 import os
 import random
 import inspect
+import re  # Added for potential regex needs, though train.py usually knows its lambdas
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 import time
@@ -15,11 +16,11 @@ import torch
 from sklearn.model_selection import train_test_split
 from sentence_transformers import SentenceTransformer
 
-# --- [Plotting Libs Added] ---
+# --- [Plotting Libs] ---
 import matplotlib
-matplotlib.use("Agg") # 서버 환경(No GUI)을 위해 필수
+matplotlib.use("Agg") # Must be before importing pyplot for server environments
 import matplotlib.pyplot as plt
-# -----------------------------
+# -----------------------
 
 from queue_config import QueueConfig
 from mnl_router import MNLRouter
@@ -272,12 +273,74 @@ def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: in
 
 
 # ----------------------------
-# PLOTTING FUNCTION (Integrated)
+# PLOTTING FUNCTION (Integrated with Paper Style)
 # ----------------------------
+def set_paper_style():
+    """Sets matplotlib params for paper-quality plots."""
+    plt.rcParams.update({
+        "figure.dpi": 120,
+        "savefig.dpi": 300,
+        "font.family": "serif",
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 9,
+        "axes.linewidth": 1.0,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.major.size": 3.0,
+        "ytick.major.size": 3.0,
+        "xtick.major.width": 1.0,
+        "ytick.major.width": 1.0,
+        "legend.fontsize": 8,
+        "legend.frameon": True,
+        "legend.fancybox": False,
+        "legend.framealpha": 1.0,
+        "legend.edgecolor": "black",
+        "lines.linewidth": 1.0,
+        "axes.grid": False,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
+
+
+def _paper_axes(ax):
+    """Applies specific spine and grid styling."""
+    ax.set_facecolor("white")
+    for side in ["top", "right", "bottom", "left"]:
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_linewidth(1.0)
+    ax.tick_params(direction="out", width=1.0, length=4.0)
+    ax.xaxis.grid(False)
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.4)
+
+
+def _read_series(reg_path: Path, q_path: Path, max_steps: Optional[int], qgap_abs: bool):
+    """Reads and truncates regret and queue data series."""
+    df_reg = pd.read_csv(reg_path)
+    std_reg = df_reg["cum_regret"].to_numpy() if "cum_regret" in df_reg.columns else df_reg.iloc[:, 0].to_numpy()
+
+    df_q = pd.read_csv(q_path)
+    q_diff = df_q["Q_diff"].to_numpy() if "Q_diff" in df_q.columns else df_q.iloc[:, 0].to_numpy()
+
+    L = min(len(std_reg), len(q_diff))
+    if max_steps is not None:
+        L = min(L, int(max_steps))
+
+    std_reg = std_reg[:L]
+    q_diff = q_diff[:L]
+    if qgap_abs:
+        q_diff = np.abs(q_diff)
+
+    t = np.arange(1, L + 1)
+    q_cum = np.cumsum(q_diff)
+    return t, std_reg, q_diff, q_cum
+
+
 def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optional[int] = None):
     """
-    plot_regret.py의 로직을 함수화함.
-    학습이 끝난 후 즉시 호출되어 결과 그래프를 저장함.
+    Plots Standard Regret and Queue Gap for the given lambdas using paper style.
     """
     print(f"\n[Plotting] Generating plots in {output_dir}...")
     plots_dir = output_dir / "plots"
@@ -287,129 +350,75 @@ def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optio
         print("[Warn] No lambdas to plot.")
         return
 
-    # sort
     target_lambdas = sorted(target_lambdas)
     print(f"[Plotting] Target Lambdas: {target_lambdas}")
     
-    filename_suffix = ""
-    if max_steps is not None:
-        print(f"[Plotting] Restricted to first {max_steps} steps.")
-        filename_suffix = f"_{max_steps}"
+    set_paper_style()
+    
+    series_lam = {}
 
-    data_store = {}
-
+    # 1. Load Data
     for lam in target_lambdas:
         lam_tag = f"{lam:.2f}"
-        
-        # 파일명 매칭 (CSV 파일 존재 확인)
         reg_path = output_dir / f"regret_history_lam_{lam_tag}.csv"
-        q_path   = output_dir / f"Qregret_history_lam_{lam_tag}.csv"
+        q_path = output_dir / f"Qregret_history_lam_{lam_tag}.csv"
 
         if not reg_path.exists() or not q_path.exists():
             print(f"[Warn] Missing files for lambda={lam}, skipping plotting.")
             continue
+        
+        # Read data
+        t, std_reg, q_diff, q_cum = _read_series(reg_path, q_path, max_steps, qgap_abs=False)
+        series_lam[lam] = {"t": t, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
 
-        df_reg = pd.read_csv(reg_path)
-        if "cum_regret" in df_reg.columns:
-            std_reg = df_reg["cum_regret"].to_numpy()
-        else:
-            std_reg = df_reg.iloc[:, 0].to_numpy()
-
-        rounds = np.arange(1, len(std_reg) + 1)
-
-        df_q = pd.read_csv(q_path)
-        if "Q_diff" in df_q.columns:
-            q_diff = df_q["Q_diff"].to_numpy()
-        else:
-            q_diff = df_q.iloc[:, 0].to_numpy()
-
-        L = min(len(rounds), len(q_diff))
-        if max_steps is not None:
-            L = min(L, max_steps)
-
-        rounds = rounds[:L]
-        std_reg = std_reg[:L]
-        q_diff = q_diff[:L]
-        q_cum = np.cumsum(q_diff)
-
-        data_store[lam] = {
-            "rounds": rounds,
-            "std_reg": std_reg,
-            "q_diff": q_diff,
-            "q_cum": q_cum,
-        }
-
-    if not data_store:
+    if not series_lam:
         print("[Error] No valid data loaded for plotting.")
         return
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    colors = plt.cm.viridis(np.linspace(0, 0.9, len(data_store)))
+    filename_suffix = ""
+    if max_steps is not None:
+        filename_suffix = f"_{max_steps}"
 
-    # 1. Standard Regret Plot
-    plt.figure(figsize=(10,6))
-    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
-        plt.plot(
-            data["rounds"],
-            data["std_reg"],
-            label=f"$\\lambda={lam}$",
-            color=colors[i],
-            linewidth=2,
-        )
+    # Default figure size from provided script
+    fig_w, fig_h = 5.0, 4.0
 
-    plt.xlabel("Time Step $t$", fontsize=12)
-    plt.ylabel("Standard Cumulative Regret", fontsize=12)
-    plt.title(f"Standard Regret", fontsize=14)
-    plt.legend(fontsize=10)
-    plt.tight_layout()
-    out_std = plots_dir / f"plot_standard_regret{filename_suffix}.png"
-    plt.savefig(out_std, dpi=300)
-    plt.close()
+    # 2. Standard Regret Plot
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    ax = fig.gca()
+    for lam in sorted(series_lam.keys()):
+        d = series_lam[lam]
+        ax.plot(d["t"], d["std_reg"], label=rf"$\lambda={lam:.2f}$")
+    
+    ax.set_xlabel("t (time)")
+    ax.set_ylabel("Cumulative Regret (lower is better)")
+    _paper_axes(ax)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    
+    out_std = plots_dir / f"standard_regret_all_lams{filename_suffix}.png"
+    fig.savefig(out_std)
+    plt.close(fig)
     print(f"[Saved] {out_std}")
 
-    # 2. Queue Stability Plot
-    plt.figure(figsize=(10, 6))
-    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
-        plt.plot(
-            data["rounds"],
-            data["q_diff"],
-            label=f"$\\lambda={lam}$",
-            color=colors[i],
-            alpha=0.7,
-            linewidth=1,
-        )
+    # 3. Queue Gap Plot (Q_r - Q_o)
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    ax = fig.gca()
+    for lam in sorted(series_lam.keys()):
+        d = series_lam[lam]
+        ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
+        
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("t (time)")
+    ax.set_ylabel(r"$Q_r(t)-Q_o(t)$")
+    _paper_axes(ax)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    
+    out_q = plots_dir / f"queue_gap_all_lams{filename_suffix}.png"
+    fig.savefig(out_q)
+    plt.close(fig)
+    print(f"[Saved] {out_q}")
 
-    plt.axhline(0, color="black", linestyle="--", alpha=0.5)
-    plt.xlabel("Time Step $t$", fontsize=12)
-    plt.ylabel(r"$|Q(t) - Q^*(t)|$", fontsize=12)
-    plt.title("Instantaneous Queue Gap (Absolute)", fontsize=14)
-    plt.legend(fontsize=10)
-    plt.tight_layout()
-    out_q_diff = plots_dir / f"plot_queue_stability{filename_suffix}.png"
-    plt.savefig(out_q_diff, dpi=300)
-    plt.close()
-    print(f"[Saved] {out_q_diff}")
-
-    # 3. Cumulative Queue Gap Plot
-    plt.figure(figsize=(10, 6))
-    for i, (lam, data) in enumerate(sorted(data_store.items(), key=lambda x: x[0])):
-        plt.plot(
-            data["rounds"],
-            data["q_cum"],
-            label=f"$\\lambda={lam}$",
-            color=colors[i],
-            linewidth=2,
-        )
-
-    plt.xlabel("Time Step $t$", fontsize=12)
-    plt.ylabel(r"Cumulative $Q(s) - Q^*(s)$", fontsize=12)
-    plt.title("Cumulative Queue Gap ", fontsize=14)
-    plt.legend(fontsize=10)
-    plt.tight_layout()
-    out_q_cum = plots_dir / f"plot_queue_cumulative{filename_suffix}.png"
-    plt.savefig(out_q_cum, dpi=300)
-    plt.close()
-    print(f"[Saved] {out_q_cum}")
     print("[Plotting] All plots generated successfully.\n")
 
 
@@ -590,10 +599,8 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f} time={elapsed_sec:.1f}s")
 
     # --- [Run Plotting] ---
-    # 모든 lambda loop가 끝난 후 플롯 생성
     try:
         run_plotting(output_dir, lambdas)
     except Exception as e:
         print(f"[Error] Failed to generate plots: {e}")
     # ----------------------
-
