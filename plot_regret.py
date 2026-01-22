@@ -194,22 +194,6 @@ def main():
     plt.close(fig)
     print(f"[Saved] {out_q}")
 
-    fig = plt.figure(figsize=(args.fig_w, args.fig_h))
-    ax = fig.gca()
-    for lam in target_lambdas:
-        d = series_lam[lam]
-        ax.plot(d["t"], d["q_cum"], label=rf"$\lambda={lam:.2f}$")
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
-    ax.set_xlabel("t (time)")
-    ax.set_ylabel(r"Cumulative $(Q_r-Q_o)$")
-    _paper_axes(ax)
-    ax.legend(loc="upper left")
-    fig.tight_layout()
-    out_qcum = plots_dir / f"queue_gap_cumulative_all_lams{filename_suffix}.png"
-    fig.savefig(out_qcum)
-    plt.close(fig)
-    print(f"[Saved] {out_qcum}")
-
     print("\n[Done] All plots generated.")
 
 
