@@ -67,15 +67,10 @@ def _parse_lambda_from_name(name: str, is_q: bool) -> float | None:
 
 
 def _pick_latest_by_mtime(paths: list[Path]) -> Path:
-    # 같은 lambda 파일이 여러 개 있으면 최신 수정본을 고른다
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
 def collect_runs(root_dir: Path, include: list[str] | None, exclude: list[str]):
-    """
-    return:
-      alg_data[alg_name][lam] = dict(reg_path=..., q_path=...)
-    """
     alg_dirs = []
     for p in root_dir.iterdir():
         if not p.is_dir():
@@ -92,7 +87,6 @@ def collect_runs(root_dir: Path, include: list[str] | None, exclude: list[str]):
     alg_data = {}
 
     for alg_dir in sorted(alg_dirs, key=lambda x: x.name):
-        # 재귀적으로 찾는다 (output_dir 내부에 run 폴더를 만들었을 가능성 대비)
         reg_files = list(alg_dir.rglob("regret_history_lam_*.csv"))
         q_files = list(alg_dir.rglob("Qregret_history_lam_*.csv"))
 
@@ -113,7 +107,6 @@ def collect_runs(root_dir: Path, include: list[str] | None, exclude: list[str]):
 
         common_lams = sorted(set(reg_map.keys()) & set(q_map.keys()))
         if not common_lams:
-            # 이 알고리즘 폴더에는 유효 데이터가 없다
             continue
 
         alg_runs = {}
@@ -170,7 +163,6 @@ def main():
         exclude=args.exclude or [],
     )
 
-    # lambda 자동 수집
     if args.lambdas is not None and len(args.lambdas) > 0:
         target_lambdas = sorted([float(x) for x in args.lambdas])
     else:
@@ -190,9 +182,7 @@ def main():
 
     plt.style.use("seaborn-v0_8-whitegrid")
 
-    # lambda별로 “알고리즘 전부” 한 장에 그린다
     for lam in target_lambdas:
-        # 데이터 로드
         series = {}
         for alg, runs in alg_data.items():
             if lam not in runs:
@@ -213,11 +203,20 @@ def main():
 
         alg_names = sorted(series.keys())
         colors = plt.cm.viridis(np.linspace(0, 0.9, len(alg_names)))
-
         lam_tag = f"{lam:.2f}"
 
+        # ---------------------------------------------------------------------
+        # [변경] 알고리즘이 3개 이하일 경우, 파일명에 이름을 직접 명시 (예: A_vs_B)
+        # ---------------------------------------------------------------------
+        if 0 < len(alg_names) <= 3:
+            # 이름이 너무 길어질 수 있으므로, 적당히 잘라쓰거나 그대로 씀
+            prefix_str = "_vs_".join(alg_names)
+        else:
+            prefix_str = "ALLALG"
+        # ---------------------------------------------------------------------
+
         # 1) Standard regret
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(6, 6))
         for i, alg in enumerate(alg_names):
             d = series[alg]
             plt.plot(d["rounds"], d["std_reg"], label=alg, color=colors[i], linewidth=2)
@@ -226,13 +225,14 @@ def main():
         plt.title(f"Standard Regret (lambda={lam_tag})", fontsize=14)
         plt.legend(fontsize=10)
         plt.tight_layout()
-        out_std = plots_dir / f"ALLALG_standard_regret_lam_{lam_tag}{filename_suffix}.png"
+        
+        out_std = plots_dir / f"{prefix_str}_standard_regret_lam_{lam_tag}{filename_suffix}.png"
         plt.savefig(out_std, dpi=300)
         plt.close()
         print(f"[Saved] {out_std}")
 
         # 2) Instantaneous Q-gap
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(6, 6))
         for i, alg in enumerate(alg_names):
             d = series[alg]
             plt.plot(d["rounds"], d["q_diff"], label=alg, color=colors[i], alpha=0.8, linewidth=1.5)
@@ -243,7 +243,8 @@ def main():
         plt.title(f"Instantaneous Queue Gap (lambda={lam_tag})", fontsize=14)
         plt.legend(fontsize=10)
         plt.tight_layout()
-        out_q = plots_dir / f"ALLALG_queue_gap_lam_{lam_tag}{filename_suffix}.png"
+
+        out_q = plots_dir / f"{prefix_str}_queue_gap_lam_{lam_tag}{filename_suffix}.png"
         plt.savefig(out_q, dpi=300)
         plt.close()
         print(f"[Saved] {out_q}")
@@ -259,7 +260,8 @@ def main():
         plt.title(f"Cumulative Queue Gap (lambda={lam_tag})", fontsize=14)
         plt.legend(fontsize=10)
         plt.tight_layout()
-        out_qc = plots_dir / f"ALLALG_queue_cum_lam_{lam_tag}{filename_suffix}.png"
+
+        out_qc = plots_dir / f"{prefix_str}_queue_cum_lam_{lam_tag}{filename_suffix}.png"
         plt.savefig(out_qc, dpi=300)
         plt.close()
         print(f"[Saved] {out_qc}")
