@@ -130,7 +130,7 @@ def main():
         type=str,
         nargs="+",
         default=None,
-        help="Algorithms to run by output_name (e.g., AQCB, CQB_eps, Q_UCB). If omitted, run all.",
+        help="Algorithms to run by output_name (e.g., ACQB-CL, CQB_eps, Q_UCB). If omitted, run all.",
     )
 
     parser.add_argument("--extra_args", type=str, default="", help="Extra args forwarded to every script")
@@ -149,7 +149,7 @@ def main():
         ("base_line/3qucb", "Q_UCB"),
         ("base_line/4qths", "Q_THS"),
         ("base_line/5cqb_epsilon", "CQB_eps"),
-        ("train_by_model/routerbench", "AQCB"),
+        ("train_by_model/routerbench", "ACQB-CL"),
     ]
 
     dataset_spec = {
@@ -256,4 +256,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-#python3 B_MNL_Bandit_disjoint/run_all.py result --run 1 --datasets sprout --job_pool_size 5000 --lam_list 0.0 0.1 1 5 --algs AQCB
+#python3 B_MNL_Bandit_disjoint/run_all.py result --run 1 --datasets sprout --job_pool_size 5000 --lam_list 0.0 0.1 1 5 --algs ACQB-CL
