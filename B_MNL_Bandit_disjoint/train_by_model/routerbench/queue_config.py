@@ -35,8 +35,7 @@ class QueueConfig:
     # -----------------------------
     assort_K: int = 1
     arrival_rate: float = 0.5
-    max_steps: int = 20000
-
+    max_steps: int = 5000
     # util -> r -> odds
     r_eps: float = 1e-6
     r_lo: float = 0.1
@@ -44,11 +43,11 @@ class QueueConfig:
 
     # unknown horizon schedule
     kappa: float =4.0
-    c1: float = 15.0
+    c1: float = 5.0
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
-    alpha_coef: float = 0.01
+    alpha_coef: float = 0.0001
 
     # theta solver (full-history)
     theta_solver: str = "lbfgs"  #  "lbfgs"
