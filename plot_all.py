@@ -17,14 +17,11 @@ def set_paper_style():
     plt.rcParams.update({
         "figure.dpi": 120,
         "savefig.dpi": 300,
-
         "font.family": "serif",
         "font.size": 10,
-
         "axes.titlesize": 11,
         "axes.labelsize": 9,
         "axes.linewidth": 1.0,
-
         "xtick.labelsize": 8,
         "ytick.labelsize": 8,
         "xtick.direction": "out",
@@ -33,17 +30,13 @@ def set_paper_style():
         "ytick.major.size": 3.0,
         "xtick.major.width": 1.0,
         "ytick.major.width": 1.0,
-
         "legend.fontsize": 8,
         "legend.frameon": True,
         "legend.fancybox": False,
         "legend.framealpha": 1.0,
         "legend.edgecolor": "black",
-
-        "lines.linewidth": 1.2,
-
+        "lines.linewidth": 1.0,
         "axes.grid": False,
-
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     })
@@ -59,7 +52,6 @@ def parse_args():
     ap.add_argument("--qgap_abs", action="store_true")
     ap.add_argument("--fig_w", type=float, default=5.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
-
     ap.add_argument(
         "--mode",
         type=str,
@@ -234,9 +226,6 @@ def main():
     if args.qgap_abs:
         filename_suffix += "_absQ"
 
-    # -------------------------
-    # per_lam: compare algorithms at fixed lambda
-    # -------------------------
     if args.mode == "per_lam":
         for lam in target_lambdas:
             series = {}
@@ -293,13 +282,9 @@ def main():
             fig.savefig(out_q)
             plt.close(fig)
 
-
         print("\n[Done] All plots generated.")
         return
 
-    # -------------------------
-    # per_alg: overlay lambdas for each algorithm
-    # -------------------------
     any_plotted = False
     for alg, runs in sorted(alg_data.items(), key=lambda kv: kv[0]):
         lams_here = sorted(set(runs.keys()) & set(target_lambdas))
@@ -339,14 +324,13 @@ def main():
             ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
         ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel("t (time)")
-        ax.set_ylabel(r"$Q_r(t)-Q_o(t)$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
+        ax.set_ylabel(r"$|Q_r(t)-Q_o(t)|$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
         _paper_axes(ax)
         ax.legend(loc="upper left")
         fig.tight_layout()
         out_q = plots_dir / f"{alg_file}_queue_gap_all_lams{filename_suffix}.png"
         fig.savefig(out_q)
         plt.close(fig)
-
 
         print(f"[Saved] {alg_label} -> {out_std.name}, {out_q.name}")
 
@@ -358,7 +342,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#실행 예시(ACQB-CL 하나에서 람다 여러 개 겹치기)
-#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --include ACQB-CL --mode per_alg
-#특정 람다별 전체 알고리즘
-#python3 plot_all.py --root_dir result1000/sprout/ar0.8/exp1 --lambda 5
