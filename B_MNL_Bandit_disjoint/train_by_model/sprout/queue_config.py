@@ -33,8 +33,8 @@ class QueueConfig:
     # -----------------------------
     # Queue / Bandit (Online)
     # -----------------------------
-    assort_K: int = 1
-    arrival_rate: float = 0.8
+    assort_K: int = 2
+    arrival_rate: float = 0.9
     max_steps: int = 20000
 
     # util -> r -> odds
@@ -44,7 +44,7 @@ class QueueConfig:
 
     # unknown horizon schedule
     kappa: float =4.0
-    c1: float = 6.0
+    c1: float = 7.0 # 0.8 6 # 0.9 7
 
     # ridge for theta + initial V scale (V = lambda_0 I + Σ z z^T)
     lambda_0: float = 1.0
