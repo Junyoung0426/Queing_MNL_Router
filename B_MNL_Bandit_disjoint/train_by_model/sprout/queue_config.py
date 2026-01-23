@@ -81,7 +81,7 @@ class QueueConfig:
     explore_enabled: bool = True
 
     assort_K: int = 1
-    arrival_rate: float = 0.8
+    arrival_rate: float = 0.9
     max_steps: int = 5000
 
     r_eps: float = 1e-6
@@ -92,10 +92,10 @@ class QueueConfig:
     kappa: float = 4.0
 
     # 원하는 평균 forced-explore 비율(대략 decision-step 기준 근사)
-    target_explore_rate: float = 0.20
+    target_explore_rate: float = 0.40
 
     lambda_0: float = 1.0
-    alpha_coef: float = 0.006
+    alpha_coef: float = 0.001
 
     theta_solver: str = "lbfgs"
     lbfgs_max_iter: int = 500
