@@ -97,7 +97,7 @@ def _format_ar_tag(x):
 
 def _tag_float(x: float) -> str:
     s = f"{float(x):g}"
-    return s.replace(".", "p").replace("-", "m")
+    return s.replace("-", "m")
 
 
 def _try_write_best(alg_root: Path, dry_run: bool):
