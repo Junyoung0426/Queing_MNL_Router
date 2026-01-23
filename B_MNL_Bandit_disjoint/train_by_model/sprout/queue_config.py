@@ -88,10 +88,8 @@ class QueueConfig:
     r_lo: float = 0.1
     r_hi: float = 0.99
 
-    # TS 관련
     kappa: float = 4.0
 
-    # 원하는 평균 forced-explore 비율(대략 decision-step 기준 근사)
     target_explore_rate: float = 0.40
 
     lambda_0: float = 1.0
@@ -128,7 +126,6 @@ class QueueConfig:
     balance_per_class: int = 64
 
     @property
-    @property
     def c1(self) -> float:
         if not self.explore_enabled:
             return 0.0
@@ -141,7 +138,7 @@ class QueueConfig:
             return 0.0
         T = int(self.max_steps)
         a = float(self.arrival_rate)
-        v = a * _eta_mean(float(self.c1), T)   # self.c1은 이미 반올림된 값
+        v = a * _eta_mean(float(self.c1), T)   
         return round(float(v), 4)
 
     @property
