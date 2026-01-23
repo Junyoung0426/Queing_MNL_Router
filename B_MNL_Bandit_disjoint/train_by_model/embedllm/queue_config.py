@@ -90,10 +90,10 @@ class QueueConfig:
 
     kappa: float = 4.0
 
-    target_explore_rate: float = 0.05
+    target_explore_rate: float = 0.01
 
     lambda_0: float = 1.0
-    alpha_coef: float = 0.001
+    alpha_coef: float = 0.0001
 
     theta_solver: str = "lbfgs"
     lbfgs_max_iter: int = 500
