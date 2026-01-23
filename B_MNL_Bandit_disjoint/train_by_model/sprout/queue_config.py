@@ -81,7 +81,7 @@ class QueueConfig:
     explore_enabled: bool = True
 
     assort_K: int = 1
-    arrival_rate: float = 0.9
+    arrival_rate: float = 0.7
     max_steps: int = 5000
 
     r_eps: float = 1e-6
@@ -90,7 +90,7 @@ class QueueConfig:
 
     kappa: float = 4.0
 
-    target_explore_rate: float = 0.40
+    target_explore_rate: float = 0.05
 
     lambda_0: float = 1.0
     alpha_coef: float = 0.001
