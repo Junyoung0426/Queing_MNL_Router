@@ -128,10 +128,12 @@ class QueueConfig:
     balance_per_class: int = 64
 
     @property
+    @property
     def c1(self) -> float:
         if not self.explore_enabled:
             return 0.0
-        return _solve_c1(self.target_explore_rate, self.arrival_rate, self.max_steps)
+        v = _solve_c1(self.target_explore_rate, self.arrival_rate, self.max_steps)
+        return round(float(v), 4)
 
     @property
     def mean_explore_rate(self) -> float:
@@ -139,7 +141,8 @@ class QueueConfig:
             return 0.0
         T = int(self.max_steps)
         a = float(self.arrival_rate)
-        return a * _eta_mean(float(self.c1), T)
+        v = a * _eta_mean(float(self.c1), T)   # self.c1은 이미 반올림된 값
+        return round(float(v), 4)
 
     @property
     def cqb_tau(self) -> int:
