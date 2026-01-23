@@ -171,7 +171,7 @@ def main():
         d = series_lam[lam]
         ax.plot(d["t"], d["std_reg"], label=rf"$\lambda={lam:.2f}$")
     ax.set_xlabel("t (time)")
-    ax.set_ylabel("Cumulative Regret (lower is better)")
+    ax.set_ylabel("Cumulative Regret")
     _paper_axes(ax)
     ax.legend(loc="upper left")
     fig.tight_layout()
@@ -187,7 +187,7 @@ def main():
         ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
     ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("t (time)")
-    ax.set_ylabel(r"$Q_r(t)-Q_o(t)$" if args.qgap_abs else r"$Q_r(t)-Q_o(t)$")
+    ax.set_ylabel(r"$Q(t)-Q_*(t)$" if args.qgap_abs else r"$Q_r(t)-Q_*t)$")
     _paper_axes(ax)
     ax.legend(loc="upper left")
     fig.tight_layout()
