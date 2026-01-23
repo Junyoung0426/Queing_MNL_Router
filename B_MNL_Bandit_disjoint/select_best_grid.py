@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import numpy as np
+import pandas as pd
 
 
 def _load_json(p: Path):
@@ -13,45 +15,82 @@ def _safe_float(x, default=float("nan")):
         return default
 
 
+def _is_nan(x):
+    return not (x == x)
+
+
+def _read_q_metrics(combo_dir: Path):
+    q_files = sorted(combo_dir.glob("Qregret_history_lam_*.csv"))
+    if not q_files:
+        return float("nan"), float("nan"), float("nan")
+
+    tail_means = []
+    p95s = []
+    gap_abs_means = []
+
+    for qp in q_files:
+        try:
+            df = pd.read_csv(qp)
+        except Exception:
+            continue
+
+        if "Q_router" in df.columns:
+            q = df["Q_router"].to_numpy(dtype=float)
+            if q.size > 0:
+                st = int(0.8 * q.size)
+                tail_means.append(float(np.mean(q[st:])))
+                p95s.append(float(np.percentile(q, 95)))
+
+        if "Q_diff" in df.columns:
+            d = df["Q_diff"].to_numpy(dtype=float)
+            if d.size > 0:
+                gap_abs_means.append(float(np.mean(np.abs(d))))
+
+    def _m(x):
+        x = [v for v in x if v == v]
+        return float(np.mean(x)) if x else float("nan")
+
+    return _m(tail_means), _m(p95s), _m(gap_abs_means)
+
+
 def score_combo(combo_dir: Path):
     files = sorted(combo_dir.glob("summary_lam_*.json"))
     if not files:
         return None
 
     regrets = []
-    qgaps = []
     for f in files:
         d = _load_json(f)
         regrets.append(_safe_float(d.get("avg_regret")))
-        qgaps.append(_safe_float(d.get("final_Q_gap")))
 
     regrets = [x for x in regrets if x == x]
-    qgaps = [x for x in qgaps if x == x]
-
     if not regrets:
         return None
 
-    mean_reg = sum(regrets) / len(regrets)
-    mean_qgap = sum(qgaps) / len(qgaps) if qgaps else float("nan")
+    mean_reg = float(sum(regrets) / len(regrets))
+    q_tail_mean, q_p95, q_gap_abs_mean = _read_q_metrics(combo_dir)
 
     any_one = _load_json(files[0])
-    out = {
+    return {
         "combo_dir": str(combo_dir),
         "mean_avg_regret": float(mean_reg),
-        "mean_final_Q_gap": float(mean_qgap),
         "n_lams_found": int(len(files)),
+
+        "Q_tail_mean": float(q_tail_mean),
+        "Q_p95": float(q_p95),
+        "Q_gap_abs_mean": float(q_gap_abs_mean),
+
         "target_explore_rate": _safe_float(any_one.get("target_explore_rate", float("nan"))),
         "alpha_coef": _safe_float(any_one.get("alpha_coef", float("nan"))),
         "c1": _safe_float(any_one.get("c1", float("nan"))),
         "mean_explore_rate": _safe_float(any_one.get("mean_explore_rate", float("nan"))),
         "cqb_tau": int(any_one.get("cqb_tau", -1)) if str(any_one.get("cqb_tau", "")).lstrip("-").isdigit() else -1,
     }
-    return out
 
 
-def main(alg_root: str):
+def main(alg_root: str, topk: int = 3):
     root = Path(alg_root).resolve()
-    best = None
+    scores = []
 
     for er_dir in sorted(root.glob("er*")):
         if not er_dir.is_dir():
@@ -60,28 +99,36 @@ def main(alg_root: str):
             if not alpha_dir.is_dir():
                 continue
             s = score_combo(alpha_dir)
-            if s is None:
-                continue
-            if best is None:
-                best = s
-            else:
-                if s["mean_avg_regret"] < best["mean_avg_regret"]:
-                    best = s
-                elif s["mean_avg_regret"] == best["mean_avg_regret"]:
-                    if s["mean_final_Q_gap"] == s["mean_final_Q_gap"] and best["mean_final_Q_gap"] == best["mean_final_Q_gap"]:
-                        if s["mean_final_Q_gap"] < best["mean_final_Q_gap"]:
-                            best = s
+            if s is not None:
+                scores.append(s)
 
-    if best is None:
+    if not scores:
         print("no valid combos found under:", str(root))
         return
 
-    out_path = root / "best_summary.json"
-    out_path.write_text(json.dumps(best, ensure_ascii=False, indent=2), encoding="utf-8")
+    def rank_key(s):
+        return (
+            s["mean_avg_regret"],
+            0 if not _is_nan(s["Q_tail_mean"]) else 1, s["Q_tail_mean"],
+            0 if not _is_nan(s["Q_p95"]) else 1, s["Q_p95"],
+        )
+
+    scores.sort(key=rank_key)
+    top = scores[: max(1, int(topk))]
+
+    out = {
+        "alg_root": str(root),
+        "ranking_rule": "sort by mean_avg_regret, then Q_tail_mean, then Q_p95 (all smaller is better)",
+        "topk": int(topk),
+        "top": top,
+    }
+
+    out_path = root / "best_top3.json"
+    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print("saved:", str(out_path))
-    print(json.dumps(best, ensure_ascii=False, indent=2))
+    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     import sys
-    main(sys.argv[1])
+    main(sys.argv[1], topk=3)
