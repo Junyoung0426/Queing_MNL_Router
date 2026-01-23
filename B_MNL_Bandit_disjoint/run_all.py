@@ -114,12 +114,25 @@ def _try_write_best(alg_root: Path, dry_run: bool):
     except subprocess.CalledProcessError as e:
         print("[Best] failed:", e)
 
+def _is_done(output_dir: Path, lam_list: list[float]) -> bool:
+    if not output_dir.exists():
+        return False
+    cfg = output_dir / "config_full.json"
+    models = output_dir / "models.json"
+    if not cfg.exists() or not models.exists():
+        return False
+    for lam in lam_list:
+        if not (output_dir / f"summary_lam_{float(lam):.4f}.json").exists():
+            return False
+    return True
+
 
 def main():
     BASE_DIR = Path(__file__).resolve().parent
     DEFAULT_DATA_DIR = (BASE_DIR.parent / "Data").resolve()
 
     parser = argparse.ArgumentParser(description="Run training sequentially (routerbench/sprout/embedllm).")
+    parser.add_argument("--force", action="store_true")
     parser.add_argument("save_path", type=str, help="Root output directory (e.g., ./result)")
     parser.add_argument("--run", type=int, required=True, help="Run index (e.g., 1,2,3...)")
 
@@ -263,7 +276,18 @@ def main():
                     else:
                         current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
 
+                    if do_search:
+                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
+                    else:
+                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
+
                     current_output_dir.mkdir(parents=True, exist_ok=True)
+
+                    if (not args.force) and _is_done(current_output_dir, [float(x) for x in args.lam_list]):
+                        print(f"[SKIP DONE] {run_tag} -> {current_output_dir}")
+                        continue
+
+
 
                     cmd = [
                         sys.executable,
