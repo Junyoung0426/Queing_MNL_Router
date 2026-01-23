@@ -54,7 +54,7 @@ class CQBEpsilonEnv(BaseQueueEnv):
 
         T = int(getattr(self.config, "max_steps", 100000))
         self._cqb_T = max(1, T)
-        self._cqb_tau = max(1, self._cqb_T // 10)              # tau = T/10
+        self._cqb_tau = int(getattr(self.config, "cqb_tau", max(1, self._cqb_T // 20)))            # tau = T/10
         self._cqb_eps = 1.0 / math.sqrt(float(self._cqb_T))     # eps = 1/sqrt(T)
 
         seed = int(getattr(self.config, "seed", 0))

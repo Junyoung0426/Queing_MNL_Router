@@ -86,7 +86,16 @@ def _cfg_to_dict(cfg: QueueConfig) -> Dict[str, Any]:
         if callable(v):
             continue
         out[str(k)] = _to_jsonable(v)
+
+    for k in ["c1", "mean_explore_rate", "cqb_tau"]:
+        try:
+            if hasattr(cfg, k):
+                out[k] = _to_jsonable(getattr(cfg, k))
+        except Exception:
+            pass
+
     return out
+
 
 
 def _dump_json(path: Path, obj: Any):
@@ -107,7 +116,11 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--embedder_model", type=str, default=None)
     ap.add_argument("--b_type", type=str, default=None)
     ap.add_argument("--deterministic", action="store_true")
+
+    ap.add_argument("--target_explore_rate", type=float, default=None)
+    ap.add_argument("--alpha_coef", type=float, default=None)
     return ap
+
 
 
 def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
@@ -119,6 +132,12 @@ def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
         cfg.embedder_model = str(args.embedder_model)
     if getattr(args, "b_type", None) is not None:
         cfg.b_type = str(args.b_type)
+
+    if getattr(args, "target_explore_rate", None) is not None:
+        cfg.target_explore_rate = float(args.target_explore_rate)
+    if getattr(args, "alpha_coef", None) is not None:
+        cfg.alpha_coef = float(args.alpha_coef)
+
 
 
 # ----------------------------
@@ -427,7 +446,7 @@ def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optio
 # ----------------------------
 def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], args: argparse.Namespace, config: QueueConfig):
     _apply_common_overrides(config, args)
-
+    config.explore_enabled = True
     b_type = str(getattr(config, "b_type", "linear")).lower().strip()
     config.b_type = b_type
 
@@ -583,16 +602,26 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             "lam_cost": float(lam),
             "avg_regret": float(avg_reg),
             "final_Q_gap": float(Q_gap),
+
+            "target_explore_rate": float(getattr(config, "target_explore_rate", float("nan"))),
+            "alpha_coef": float(getattr(config, "alpha_coef", float("nan"))),
+
+            "c1": float(getattr(config, "c1", float("nan"))),
+            "mean_explore_rate": float(getattr(config, "mean_explore_rate", float("nan"))),
+            "cqb_tau": int(getattr(config, "cqb_tau", -1)) if hasattr(config, "cqb_tau") else -1,
+
             "explore_rate": float(expl_rate),
+            "arrival rate": float(config.arrival_rate),
             "dep_router_mean": float(dep_router_mean),
             "n_stream": int(stream_idx.size),
             "offline_total": int(len(offline_idx)),
             "online_total": int(len(online_idx)),
             "use_offline_stream": bool(getattr(args, "use_offline_stream", False)),
             "b_type": str(b_type),
-            "elapsed_seconds": float(elapsed_sec),        
-            "elapsed_minutes": float(elapsed_sec / 60.0)
+            "elapsed_seconds": float(elapsed_sec),
+            "elapsed_minutes": float(elapsed_sec / 60.0),
         }
+
         _dump_json(output_dir / f"summary_lam_{lam:.4f}.json", summary)
 
         print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f} time={elapsed_sec:.1f}s")

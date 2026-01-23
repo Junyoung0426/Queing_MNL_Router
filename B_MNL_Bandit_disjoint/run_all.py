@@ -60,18 +60,14 @@ def _get_cfg(BASE_DIR: Path, dataset: str):
 
 def _get_base_seed(BASE_DIR: Path, dataset: str) -> int:
     cfg = _get_cfg(BASE_DIR, dataset)
-    if cfg is None:
-        return 42
-    if not hasattr(cfg, "seed"):
+    if cfg is None or not hasattr(cfg, "seed"):
         return 42
     return int(getattr(cfg, "seed"))
 
 
 def _get_assort_k(BASE_DIR: Path, dataset: str) -> int:
     cfg = _get_cfg(BASE_DIR, dataset)
-    if cfg is None:
-        return 1
-    if not hasattr(cfg, "assort_K"):
+    if cfg is None or not hasattr(cfg, "assort_K"):
         return 1
     try:
         return int(getattr(cfg, "assort_K"))
@@ -81,9 +77,7 @@ def _get_assort_k(BASE_DIR: Path, dataset: str) -> int:
 
 def _get_arrival_rate(BASE_DIR: Path, dataset: str):
     cfg = _get_cfg(BASE_DIR, dataset)
-    if cfg is None:
-        return None
-    if not hasattr(cfg, "arrival_rate"):
+    if cfg is None or not hasattr(cfg, "arrival_rate"):
         return None
     try:
         return float(getattr(cfg, "arrival_rate"))
@@ -101,9 +95,28 @@ def _format_ar_tag(x):
         return "arNA"
 
 
+def _tag_float(x: float) -> str:
+    s = f"{float(x):g}"
+    return s.replace(".", "p").replace("-", "m")
+
+
+def _try_write_best(alg_root: Path, dry_run: bool):
+    script = (Path(__file__).resolve().parent / "select_best_grid.py").resolve()
+    if not script.exists():
+        print("[Best] select_best_grid.py not found:", str(script))
+        return
+    cmd = [sys.executable, str(script), str(alg_root)]
+    print("CMD:", " ".join(cmd))
+    if dry_run:
+        return
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print("[Best] failed:", e)
+
+
 def main():
     BASE_DIR = Path(__file__).resolve().parent
-
     DEFAULT_DATA_DIR = (BASE_DIR.parent / "Data").resolve()
 
     parser = argparse.ArgumentParser(description="Run training sequentially (routerbench/sprout/embedllm).")
@@ -117,8 +130,8 @@ def main():
         choices=["routerbench", "sprout", "embedllm"],
     )
 
-    parser.add_argument("--job_pool_size", type=int, required=True, help="Number of samples to draw for training")
-    parser.add_argument("--lam_list", type=float, nargs="+", required=True, help="Lambda list (space-separated)")
+    parser.add_argument("--job_pool_size", type=int, required=True)
+    parser.add_argument("--lam_list", type=float, nargs="+", required=True)
     parser.add_argument("--dry_run", action="store_true")
 
     parser.add_argument("--routerbench_csv", type=str, default=str(DEFAULT_DATA_DIR / "routerbench_dataset.csv"))
@@ -133,11 +146,18 @@ def main():
         help="Algorithms to run by output_name (e.g., ACQB-CL, CQB_eps, Q_UCB). If omitted, run all.",
     )
 
-    parser.add_argument("--extra_args", type=str, default="", help="Extra args forwarded to every script")
+    parser.add_argument("--extra_args", type=str, default="")
+
+    # None이면 sweep 안 함(=config 그대로)
+    parser.add_argument("--exp_rates", type=float, nargs="+", default=None)
+    parser.add_argument("--alpha_coefs", type=float, nargs="+", default=None)
+
     args = parser.parse_args()
 
     if args.run < 1:
         raise ValueError("--run must be >= 1")
+
+    do_search = (args.exp_rates is not None) or (args.alpha_coefs is not None)
 
     save_root = Path(args.save_path).expanduser().resolve()
     save_root.mkdir(parents=True, exist_ok=True)
@@ -175,11 +195,19 @@ def main():
     print("RUN:", args.run, "=>", exp_tag)
     print("DATASETS:", args.datasets)
     print("job_pool_size:", args.job_pool_size, "lam_list:", args.lam_list)
+    print("SEARCH:", do_search)
+    if args.exp_rates is not None:
+        print("exp_rates:", args.exp_rates)
+    if args.alpha_coefs is not None:
+        print("alpha_coefs:", args.alpha_coefs)
     if allow_algs is not None:
         print("algs:", sorted(list(allow_algs)))
     if args.extra_args.strip():
         print("extra_args:", args.extra_args.strip())
     print()
+
+    er_list = [float(x) for x in args.exp_rates] if args.exp_rates is not None else [None]
+    alpha_list = [float(x) for x in args.alpha_coefs] if args.alpha_coefs is not None else [None]
 
     for ds in args.datasets:
         script_name = dataset_spec[ds]["script"]
@@ -206,54 +234,86 @@ def main():
         print(f"\n========== DATASET: {ds} ==========")
         print("assort_K:", assort_k)
         print("arrival_rate:", arrival_rate, "=>", ar_tag)
-        if assort_k >= 2:
-            print("[Skip] assort_K>=2 -> skipping:", ["RAND", "Q_UCB", "Q_THS"])
-        if allow_algs is not None:
-            print("[Filter] running only:", sorted(list(allow_algs)))
-        if not extra_has_seed:
-            print(f"[Seed] base_seed={base_seed} + (run-1)={args.run-1} => final_seed={auto_seed}")
-        else:
-            print("[Seed] Skipping auto-seed injection because --seed is provided in --extra_args")
 
-        for folder_path, output_name in targets_run:
-            if folder_path == "train_by_model/routerbench":
-                target_folder = (BASE_DIR / "train_by_model" / ds).resolve()
-            else:
-                target_folder = (BASE_DIR / folder_path).resolve()
-
-            script_path = (target_folder / script_name).resolve()
-            if not _exists(script_path):
-                print(f"[SKIP] script not found: {script_path}")
+        for er in er_list:
+            # exp_rates를 준 경우에만 스킵 체크
+            if er is not None and arrival_rate is not None and float(er) > float(arrival_rate) + 1e-12:
+                print(f"[Skip] target_explore_rate={er} > arrival_rate={arrival_rate}")
                 continue
 
-            current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
-            current_output_dir.mkdir(parents=True, exist_ok=True)
+            er_tag = f"er{_tag_float(er)}" if er is not None else "erCFG"
 
-            cmd = [
-                sys.executable,
-                str(script_path),
-                *common_args,
-                "--output_dir", str(current_output_dir),
-                *ds_args,
-            ]
+            for acoef in alpha_list:
+                a_tag = f"alpha{_tag_float(acoef)}" if acoef is not None else "alphaCFG"
 
-            if not extra_has_seed:
-                cmd += ["--seed", str(auto_seed)]
+                for folder_path, output_name in targets_run:
+                    if folder_path == "train_by_model/routerbench":
+                        target_folder = (BASE_DIR / "train_by_model" / ds).resolve()
+                    else:
+                        target_folder = (BASE_DIR / folder_path).resolve()
 
-            cmd += extra_args
+                    script_path = (target_folder / script_name).resolve()
+                    if not _exists(script_path):
+                        print(f"[SKIP] script not found: {script_path}")
+                        continue
 
-            print(f"\n--- Running: {ds}/{ar_tag}/{exp_tag}/{output_name} ---")
-            try:
-                _run(cmd, cwd=target_folder, dry_run=args.dry_run)
-                print(f"--- Finished: {ds}/{ar_tag}/{exp_tag}/{output_name} ---")
-            except subprocess.CalledProcessError as e:
-                print(f"[ERROR] {ds}/{ar_tag}/{exp_tag}/{output_name}: {e}")
-                continue
+                    # output_dir
+                    if do_search:
+                        current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name / er_tag / a_tag).resolve()
+                    else:
+                        current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
+
+                    current_output_dir.mkdir(parents=True, exist_ok=True)
+
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        *common_args,
+                        "--output_dir", str(current_output_dir),
+                        *ds_args,
+                    ]
+
+                    if not extra_has_seed:
+                        cmd += ["--seed", str(auto_seed)]
+
+                    cmd += extra_args
+
+                    # 인자로 준 축만 override, 나머지는 config 그대로
+                    if er is not None:
+                        cmd += ["--target_explore_rate", str(float(er))]
+                    if acoef is not None:
+                        cmd += ["--alpha_coef", str(float(acoef))]
+
+                    if do_search:
+                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
+                    else:
+                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
+
+                    print(f"\n--- Running: {run_tag} ---")
+                    try:
+                        _run(cmd, cwd=target_folder, dry_run=args.dry_run)
+                        print(f"--- Finished: {run_tag} ---")
+                    except subprocess.CalledProcessError as e:
+                        print(f"[ERROR] {run_tag}: {e}")
+                        continue
 
     print("\nALL DONE")
+
+    # best_summary.json 생성은 search(=exp_rates/alpha_coefs 중 하나라도 준 경우)에서만
+    if do_search:
+        print("\n[Best] scanning best combo per ALG ...")
+        for ds in args.datasets:
+            arrival_rate = _get_arrival_rate(BASE_DIR, ds)
+            ar_tag = _format_ar_tag(arrival_rate)
+            exp_tag = f"exp{int(args.run)}"
+
+            for _, output_name in targets:
+                if allow_algs is not None and output_name not in allow_algs:
+                    continue
+                alg_root = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
+                if alg_root.exists():
+                    _try_write_best(alg_root, args.dry_run)
 
 
 if __name__ == "__main__":
     main()
-
-#python3 B_MNL_Bandit_disjoint/run_all.py result --run 1 --datasets sprout --job_pool_size 5000 --lam_list 0.0 0.1 1 5 --algs ACQB-CL
