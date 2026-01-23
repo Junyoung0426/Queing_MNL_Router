@@ -81,7 +81,7 @@ class QueueConfig:
     explore_enabled: bool = True
 
     assort_K: int = 1
-    arrival_rate: float = 0.5
+    arrival_rate: float = 0.55
     max_steps: int = 5000
 
     r_eps: float = 1e-6
