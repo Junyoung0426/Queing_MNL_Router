@@ -31,6 +31,9 @@ class QueueEnv:
         self.acc_mat = acc_mat
         self.util_mat = util_mat
         self.config = config
+        if isinstance(config, type):
+            config = config()
+        self.config = config
 
         np.random.seed(config.seed)
         torch.manual_seed(config.seed)
@@ -98,7 +101,7 @@ class QueueEnv:
         self.Q_oracle_history: List[int] = []
 
         self.kappa = float(self.config.kappa)
-        self.c1 = float(self.config.c1)
+        self.c1 = float(getattr(self.config, "c1_raw", self.config.c1))
 
         # disjoint router에서 d는 router.d를 쓰는 게 안전하다
         self.d = int(getattr(self.router, "d", getattr(self.config, "d_proj", 0)))

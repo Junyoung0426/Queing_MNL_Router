@@ -128,7 +128,6 @@ class QueueConfig:
     balance_per_class: int = 64
 
     @property
-    @property
     def c1(self) -> float:
         if not self.explore_enabled:
             return 0.0
