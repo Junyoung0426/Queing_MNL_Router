@@ -119,9 +119,12 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
     ap.add_argument("--target_explore_rate", type=float, default=None)
     ap.add_argument("--alpha_coef", type=float, default=None)
+    ap.add_argument("--arrival_rate", type=float, default=None)
     return ap
 
 
+
+# B_MNL_Bandit_disjoint/train.py
 
 def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
     if getattr(args, "seed", None) is not None:
@@ -137,6 +140,9 @@ def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
         cfg.target_explore_rate = float(args.target_explore_rate)
     if getattr(args, "alpha_coef", None) is not None:
         cfg.alpha_coef = float(args.alpha_coef)
+
+    if getattr(args, "arrival_rate", None) is not None:
+        cfg.arrival_rate = float(args.arrival_rate)
 
 
 

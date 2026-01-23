@@ -133,7 +133,7 @@ def main():
     parser.add_argument("--job_pool_size", type=int, required=True)
     parser.add_argument("--lam_list", type=float, nargs="+", required=True)
     parser.add_argument("--dry_run", action="store_true")
-
+    parser.add_argument("--arrival_rate", type=float, default=None)
     parser.add_argument("--routerbench_csv", type=str, default=str(DEFAULT_DATA_DIR / "routerbench_dataset.csv"))
     parser.add_argument("--sprout_csv", type=str, default=str(DEFAULT_DATA_DIR / "sprout_dataset.csv"))
     parser.add_argument("--embedllm_csv", type=str, default=str(DEFAULT_DATA_DIR / "embedllm_dataset.csv"))
@@ -217,7 +217,7 @@ def main():
         auto_seed = base_seed + (int(args.run) - 1)
 
         assort_k = _get_assort_k(BASE_DIR, ds)
-        arrival_rate = _get_arrival_rate(BASE_DIR, ds)
+        arrival_rate = float(args.arrival_rate) if args.arrival_rate is not None else _get_arrival_rate(BASE_DIR, ds)
         ar_tag = _format_ar_tag(arrival_rate)
 
         if allow_algs is not None:
@@ -278,7 +278,8 @@ def main():
 
                     cmd += extra_args
 
-                    # 인자로 준 축만 override, 나머지는 config 그대로
+                    if args.arrival_rate is not None:
+                        cmd += ["--arrival_rate", str(float(args.arrival_rate))]
                     if er is not None:
                         cmd += ["--target_explore_rate", str(float(er))]
                     if acoef is not None:
@@ -303,7 +304,7 @@ def main():
     if do_search:
         print("\n[Best] scanning best combo per ALG ...")
         for ds in args.datasets:
-            arrival_rate = _get_arrival_rate(BASE_DIR, ds)
+            arrival_rate = float(args.arrival_rate) if args.arrival_rate is not None else _get_arrival_rate(BASE_DIR, ds)
             ar_tag = _format_ar_tag(arrival_rate)
             exp_tag = f"exp{int(args.run)}"
 
