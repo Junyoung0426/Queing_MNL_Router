@@ -45,17 +45,21 @@ def _load_queue_config_instance(qc_path: Path):
 
 
 def _get_cfg(BASE_DIR: Path, dataset: str):
-    qc_path = (BASE_DIR / "ACQB" / dataset / "queue_config.py").resolve()
     cfg = None
-    if qc_path.exists():
-        cfg = _load_queue_config_instance(qc_path)
+    for root in ("ACQB", "ACQB-CL"):
+        qc_path = (BASE_DIR / root / dataset / "queue_config.py").resolve()
+        if qc_path.exists():
+            cfg = _load_queue_config_instance(qc_path)
+            if cfg is not None:
+                return cfg
 
-    if cfg is None:
-        fallback = (BASE_DIR / "ACQB" / "routerbench" / "queue_config.py").resolve()
+        fallback = (BASE_DIR / root / "routerbench" / "queue_config.py").resolve()
         if fallback.exists():
             cfg = _load_queue_config_instance(fallback)
+            if cfg is not None:
+                return cfg
 
-    return cfg
+    return None
 
 
 def _get_base_seed(BASE_DIR: Path, dataset: str) -> int:
@@ -114,6 +118,7 @@ def _try_write_best(alg_root: Path, dry_run: bool):
     except subprocess.CalledProcessError as e:
         print("[Best] failed:", e)
 
+
 def _is_done(output_dir: Path, lam_list: list[float]) -> bool:
     if not output_dir.exists():
         return False
@@ -162,7 +167,6 @@ def main():
 
     parser.add_argument("--extra_args", type=str, default="")
 
-    # None이면 sweep 안 함(=config 그대로)
     parser.add_argument("--exp_rates", type=float, nargs="+", default=None)
     parser.add_argument("--alpha_coefs", type=float, nargs="+", default=None)
 
@@ -184,6 +188,7 @@ def main():
         ("base_line/4qths", "Q_THS"),
         ("base_line/5cqb_epsilon", "CQB_eps"),
         ("ACQB/routerbench", "ACQB"),
+        ("ACQB-CL/routerbench", "ACQB-CL"),
     ]
 
     dataset_spec = {
@@ -260,8 +265,9 @@ def main():
                 a_tag = f"alpha{_tag_float(acoef)}" if acoef is not None else "alphaCFG"
 
                 for folder_path, output_name in targets_run:
-                    if folder_path == "ACQB/routerbench":
-                        target_folder = (BASE_DIR / "ACQB" / ds).resolve()
+                    if folder_path in {"ACQB/routerbench", "ACQB-CL/routerbench"}:
+                        root_name = folder_path.split("/")[0]
+                        target_folder = (BASE_DIR / root_name / ds).resolve()
                     else:
                         target_folder = (BASE_DIR / folder_path).resolve()
 
@@ -270,7 +276,6 @@ def main():
                         print(f"[SKIP] script not found: {script_path}")
                         continue
 
-                    # output_dir
                     if do_search:
                         current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name / er_tag / a_tag).resolve()
                     else:
@@ -286,8 +291,6 @@ def main():
                     if (not args.force) and _is_done(current_output_dir, [float(x) for x in args.lam_list]):
                         print(f"[SKIP DONE] {run_tag} -> {current_output_dir}")
                         continue
-
-
 
                     cmd = [
                         sys.executable,
@@ -313,8 +316,10 @@ def main():
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
                     else:
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
+
                     if args.assort_K is not None:
                         cmd += ["--assort_K", str(int(args.assort_K))]
+
                     print(f"\n--- Running: {run_tag} ---")
                     try:
                         _run(cmd, cwd=target_folder, dry_run=args.dry_run)
@@ -325,7 +330,6 @@ def main():
 
     print("\nALL DONE")
 
-    # best_summary.json 생성은 search(=exp_rates/alpha_coefs 중 하나라도 준 경우)에서만
     if do_search:
         print("\n[Best] scanning best combo per ALG ...")
         for ds in args.datasets:
