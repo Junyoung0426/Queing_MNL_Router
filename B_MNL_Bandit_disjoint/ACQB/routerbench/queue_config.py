@@ -80,13 +80,8 @@ class QueueConfig:
 
     explore_enabled: bool = True
 
-<<<<<<< Updated upstream:B_MNL_Bandit_disjoint/ACQB/routerbench/queue_config.py
     assort_K: int = 2
     arrival_rate: float = 0.50
-=======
-    assort_K: int = 1
-    arrival_rate: float = 0.55
->>>>>>> Stashed changes:B_MNL_Bandit_disjoint/train_by_model/routerbench/queue_config.py
     max_steps: int = 5000
 
     r_eps: float = 1e-6

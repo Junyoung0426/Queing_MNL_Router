@@ -266,7 +266,7 @@ def main():
             ax.set_ylabel("Cumulative regret")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _bold_legend_label(ax, "ACQB(ours)")
             _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_std = plots_dir / f"{prefix_str}_mean_regret_lam_{lam_tag}{filename_suffix}.png"
@@ -290,7 +290,7 @@ def main():
             ax.set_ylabel(r"$Q(t)-Q_*(t)$")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _bold_legend_label(ax, "ACQB(ours)")
             _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_q = plots_dir / f"{prefix_str}_mean_qgap_lam_{lam_tag}{filename_suffix}.png"

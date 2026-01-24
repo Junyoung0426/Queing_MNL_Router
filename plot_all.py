@@ -164,8 +164,8 @@ def _paper_axes(ax):
 
 def _rename_for_legend(name: str) -> str:
     s = str(name)
-    if s == "ACQB-CL":
-        return "ACQB-CL(ours)"
+    if s == "ACQB":
+        return "ACQB(ours)"
     s = re.sub(r"(?i)_eps\b", lambda _: r"-$\epsilon$", s)
     s = re.sub(r"(?i)\beps\b", lambda _: r"$\epsilon$", s)
     return s
@@ -258,7 +258,7 @@ def main():
             ax.set_ylabel("Cumulative Regret (lower is better)")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _bold_legend_label(ax, "ACQB(ours)")
             _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_std = plots_dir / f"{prefix_str}_standard_regret_lam_{lam_tag}{filename_suffix}.png"
@@ -275,7 +275,7 @@ def main():
             ax.set_ylabel(r"$Q(t)-Q_*(t)$" if args.qgap_abs else r"$Q(t)-Q_*(t)$")
             _paper_axes(ax)
             ax.legend(loc="upper left")
-            _bold_legend_label(ax, "ACQB-CL(ours)")
+            _bold_legend_label(ax, "ACQB(ours)")
             _annotate_lambda(ax, lam)
             fig.tight_layout()
             out_q = plots_dir / f"{prefix_str}_queue_gap_lam_{lam_tag}{filename_suffix}.png"
