@@ -262,8 +262,6 @@ def main():
                         d["mu_reg"] + m * d["sd_reg"],
                         alpha=float(args.sd_alpha),
                     )
-            x_max = max(int(series[a]["t"][-1]) for a in alg_names)
-            ax.set_ylim(top=float(x_max))
             ax.set_xlabel("t (time)")
             ax.set_ylabel("Cumulative regret")
             _paper_axes(ax)
@@ -331,8 +329,6 @@ def main():
                     d["mu_reg"] + m * d["sd_reg"],
                     alpha=float(args.sd_alpha),
                 )
-        x_max = max(int(series_lam[lam]["t"][-1]) for lam in lams_here)
-        ax.set_ylim(top=float(x_max))
         ax.set_xlabel("t (time)")
         ax.set_ylabel("Cumulative regret")
         _paper_axes(ax)
