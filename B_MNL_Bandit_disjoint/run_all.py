@@ -239,7 +239,7 @@ def main():
             targets_filtered = list(targets)
 
         if assort_k >= 2:
-            skip_names = {"RAND", "Q_UCB", "Q_THS"}
+            skip_names = {"Q_UCB", "Q_THS"}
             targets_run = [t for t in targets_filtered if t[1] not in skip_names]
         else:
             targets_run = list(targets_filtered)
@@ -249,7 +249,6 @@ def main():
         print("arrival_rate:", arrival_rate, "=>", ar_tag)
 
         for er in er_list:
-            # exp_rates를 준 경우에만 스킵 체크
             if er is not None and arrival_rate is not None and float(er) > float(arrival_rate) + 1e-12:
                 print(f"[Skip] target_explore_rate={er} > arrival_rate={arrival_rate}")
                 continue
