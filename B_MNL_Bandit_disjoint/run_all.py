@@ -147,6 +147,7 @@ def main():
     parser.add_argument("--lam_list", type=float, nargs="+", required=True)
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--arrival_rate", type=float, default=None)
+    parser.add_argument("--assort_K", type=int, default=None)
     parser.add_argument("--routerbench_csv", type=str, default=str(DEFAULT_DATA_DIR / "routerbench_dataset.csv"))
     parser.add_argument("--sprout_csv", type=str, default=str(DEFAULT_DATA_DIR / "sprout_dataset.csv"))
     parser.add_argument("--embedllm_csv", type=str, default=str(DEFAULT_DATA_DIR / "embedllm_dataset.csv"))
@@ -229,7 +230,7 @@ def main():
         base_seed = _get_base_seed(BASE_DIR, ds)
         auto_seed = base_seed + (int(args.run) - 1)
 
-        assort_k = _get_assort_k(BASE_DIR, ds)
+        assort_k = int(args.assort_K) if args.assort_K is not None else _get_assort_k(BASE_DIR, ds)
         arrival_rate = float(args.arrival_rate) if args.arrival_rate is not None else _get_arrival_rate(BASE_DIR, ds)
         ar_tag = _format_ar_tag(arrival_rate)
 
@@ -312,7 +313,8 @@ def main():
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
                     else:
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
-
+                    if args.assort_K is not None:
+                        cmd += ["--assort_K", str(int(args.assort_K))]
                     print(f"\n--- Running: {run_tag} ---")
                     try:
                         _run(cmd, cwd=target_folder, dry_run=args.dry_run)

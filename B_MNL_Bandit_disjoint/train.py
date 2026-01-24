@@ -110,7 +110,7 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--lam_list", type=float, nargs="+", default=None)
     ap.add_argument("--job_pool_size", type=int, default=None)
     ap.add_argument("--use_offline_stream", action="store_true")
-
+    ap.add_argument("--assort_K", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--device", type=str, default=None)
     ap.add_argument("--embedder_model", type=str, default=None)
@@ -135,7 +135,8 @@ def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
         cfg.embedder_model = str(args.embedder_model)
     if getattr(args, "b_type", None) is not None:
         cfg.b_type = str(args.b_type)
-
+    if getattr(args, "assort_K", None) is not None:
+        cfg.assort_K = int(args.assort_K)
     if getattr(args, "target_explore_rate", None) is not None:
         cfg.target_explore_rate = float(args.target_explore_rate)
     if getattr(args, "alpha_coef", None) is not None:
