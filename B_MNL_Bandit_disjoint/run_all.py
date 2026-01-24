@@ -45,13 +45,13 @@ def _load_queue_config_instance(qc_path: Path):
 
 
 def _get_cfg(BASE_DIR: Path, dataset: str):
-    qc_path = (BASE_DIR / "train_by_model" / dataset / "queue_config.py").resolve()
+    qc_path = (BASE_DIR / "ACQB" / dataset / "queue_config.py").resolve()
     cfg = None
     if qc_path.exists():
         cfg = _load_queue_config_instance(qc_path)
 
     if cfg is None:
-        fallback = (BASE_DIR / "train_by_model" / "routerbench" / "queue_config.py").resolve()
+        fallback = (BASE_DIR / "ACQB" / "routerbench" / "queue_config.py").resolve()
         if fallback.exists():
             cfg = _load_queue_config_instance(fallback)
 
@@ -156,7 +156,7 @@ def main():
         type=str,
         nargs="+",
         default=None,
-        help="Algorithms to run by output_name (e.g., ACQB-CL, CQB_eps, Q_UCB). If omitted, run all.",
+        help="Algorithms to run by output_name (e.g., ACQB, CQB_eps, Q_UCB). If omitted, run all.",
     )
 
     parser.add_argument("--extra_args", type=str, default="")
@@ -182,7 +182,7 @@ def main():
         ("base_line/3qucb", "Q_UCB"),
         ("base_line/4qths", "Q_THS"),
         ("base_line/5cqb_epsilon", "CQB_eps"),
-        ("train_by_model/routerbench", "ACQB-CL"),
+        ("ACQB/routerbench", "ACQB"),
     ]
 
     dataset_spec = {
@@ -259,8 +259,8 @@ def main():
                 a_tag = f"alpha{_tag_float(acoef)}" if acoef is not None else "alphaCFG"
 
                 for folder_path, output_name in targets_run:
-                    if folder_path == "train_by_model/routerbench":
-                        target_folder = (BASE_DIR / "train_by_model" / ds).resolve()
+                    if folder_path == "ACQB/routerbench":
+                        target_folder = (BASE_DIR / "ACQB" / ds).resolve()
                     else:
                         target_folder = (BASE_DIR / folder_path).resolve()
 

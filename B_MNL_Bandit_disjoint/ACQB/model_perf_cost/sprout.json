@@ -1,0 +1,154 @@
+{
+  "dataset": "sprout",
+  "metric": "score",
+  "n_rows": 30301,
+  "n_models": 14,
+  "tie_stats": {
+    "best_tie_rate": 0.9320484472459655,
+    "worst_tie_rate": 0.7558826441371572,
+    "avg_best_ties_per_row": 7.679350516484605,
+    "avg_worst_ties_per_row": 5.124880366984588
+  },
+  "models": {
+    "aws-claude-3-5-sonnet-v1": {
+      "avg_perf": 0.8322428302696281,
+      "best_count": 22101,
+      "worst_count": 6824,
+      "avg_cost": 0.004769041945810368,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "aws-titan-text-premier-v1": {
+      "avg_perf": 0.5779891752747435,
+      "best_count": 11212,
+      "worst_count": 15395,
+      "avg_cost": 0.0035884449688129106,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "openai-gpt-4o": {
+      "avg_perf": 0.8483713408798391,
+      "best_count": 23137,
+      "worst_count": 6240,
+      "avg_cost": 0.004420670142899575,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "openai-gpt-4o-mini": {
+      "avg_perf": 0.8096259199366357,
+      "best_count": 22132,
+      "worst_count": 7400,
+      "avg_cost": 0.0049493093297250925,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "openai-o3-mini": {
+      "avg_perf": 0.9061153097257516,
+      "best_count": 25587,
+      "worst_count": 4570,
+      "avg_cost": 0.009702179961057392,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "wxai-granite-3-2b-instruct-8k-max-tokens": {
+      "avg_perf": 0.5546071086762814,
+      "best_count": 12378,
+      "worst_count": 15352,
+      "avg_cost": 0.001699424969472955,
+      "cost_available": true,
+      "param_b": 2.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-granite-3-8b-instruct-8k-max-tokens": {
+      "avg_perf": 0.6584797531434606,
+      "best_count": 14909,
+      "worst_count": 12174,
+      "avg_cost": 0.006038501963631563,
+      "cost_available": true,
+      "param_b": 8.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-1-70b-instruct": {
+      "avg_perf": 0.8104336490544868,
+      "best_count": 19541,
+      "worst_count": 7645,
+      "avg_cost": 0.056123558628428105,
+      "cost_available": true,
+      "param_b": 70.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-1-8b-instruct": {
+      "avg_perf": 0.6900333322332597,
+      "best_count": 14896,
+      "worst_count": 11683,
+      "avg_cost": 0.00975887607669714,
+      "cost_available": true,
+      "param_b": 8.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-2-1b-instruct": {
+      "avg_perf": 0.4624533843767532,
+      "best_count": 7744,
+      "worst_count": 20779,
+      "avg_cost": 0.0010930460380845516,
+      "cost_available": true,
+      "param_b": 1.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-2-3b-instruct": {
+      "avg_perf": 0.6304758918847563,
+      "best_count": 12665,
+      "worst_count": 13840,
+      "avg_cost": 0.0032149741922708826,
+      "cost_available": true,
+      "param_b": 3.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-3-70b-instruct": {
+      "avg_perf": 0.8069182535229861,
+      "best_count": 17340,
+      "worst_count": 8985,
+      "avg_cost": 0.042956119930035314,
+      "cost_available": true,
+      "param_b": 70.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-llama-3-405b-instruct": {
+      "avg_perf": 0.7756328173987659,
+      "best_count": 16591,
+      "worst_count": 10502,
+      "avg_cost": 0.23429098297085904,
+      "cost_available": true,
+      "param_b": 405.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "wxai-mixtral-8x7b-instruct-v01": {
+      "avg_perf": 0.6167788191808852,
+      "best_count": 12459,
+      "worst_count": 13900,
+      "avg_cost": 0.008751332497277317,
+      "cost_available": true,
+      "param_b": 14.0,
+      "param_in_name": true,
+      "param_source": "parsed_moe_effective"
+    }
+  }
+}

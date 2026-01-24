@@ -75,8 +75,8 @@ def _paper_axes(ax):
 
 def _rename_for_legend(name: str) -> str:
     s = str(name)
-    if s == "ACQB-CL":
-        return "ACQB-CL(ours)"
+    if s == "ACQB":
+        return "ACQB(ours)"
     s = re.sub(r"(?i)_eps\b", lambda _: r"-$\epsilon$", s)
     s = re.sub(r"(?i)\beps\b", lambda _: r"$\epsilon$", s)
     return s

@@ -1,0 +1,134 @@
+{
+  "dataset": "mix-instruct",
+  "metric": "bertscore",
+  "n_rows": 100000,
+  "n_models": 12,
+  "tie_stats": {
+    "best_tie_rate": 0.00524,
+    "worst_tie_rate": 0.00037,
+    "avg_best_ties_per_row": 1.00609,
+    "avg_worst_ties_per_row": 1.00038
+  },
+  "models": {
+    "alpaca-native": {
+      "avg_perf": 0.719603436255157,
+      "best_count": 20892,
+      "worst_count": 1768,
+      "avg_cost": 0.0009184453600000002,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "chatglm-6b": {
+      "avg_perf": 0.7042578975507617,
+      "best_count": 9325,
+      "worst_count": 1211,
+      "avg_cost": 0.0011120506800000002,
+      "cost_available": true,
+      "param_b": 6.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "dolly-v2-12b": {
+      "avg_perf": 0.6243615528306365,
+      "best_count": 367,
+      "worst_count": 16164,
+      "avg_cost": 0.0031252068000000004,
+      "cost_available": true,
+      "param_b": 12.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "flan-t5-xxl": {
+      "avg_perf": 0.6514342330813407,
+      "best_count": 3687,
+      "worst_count": 15314,
+      "avg_cost": 0.00025218466,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "koala-7B-HF": {
+      "avg_perf": 0.6435857935452461,
+      "best_count": 2953,
+      "worst_count": 14051,
+      "avg_cost": 0.001377432,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "llama-7b-hf-baize-lora-bf16": {
+      "avg_perf": 0.6564367481762171,
+      "best_count": 1551,
+      "worst_count": 4904,
+      "avg_cost": 0.0017760986599999998,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "moss-moon-003-sft": {
+      "avg_perf": 0.6688602957117558,
+      "best_count": 3517,
+      "worst_count": 2134,
+      "avg_cost": 0.0020366593800000003,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "mpt-7b": {
+      "avg_perf": 0.6179966292506457,
+      "best_count": 95,
+      "worst_count": 16339,
+      "avg_cost": 0.00193582445,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "mpt-7b-instruct": {
+      "avg_perf": 0.6327330570906401,
+      "best_count": 182,
+      "worst_count": 8040,
+      "avg_cost": 0.00200369113,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "oasst-sft-4-pythia-12b-epoch-3.5": {
+      "avg_perf": 0.7480179895442725,
+      "best_count": 43031,
+      "worst_count": 417,
+      "avg_cost": 0.00137065596,
+      "cost_available": true,
+      "param_b": 12.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "stablelm-tuned-alpha-7b": {
+      "avg_perf": 0.6354562940534949,
+      "best_count": 2573,
+      "worst_count": 16574,
+      "avg_cost": 0.0012710721099999998,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "vicuna-13b-1.1": {
+      "avg_perf": 0.6927748926270008,
+      "best_count": 12436,
+      "worst_count": 3122,
+      "avg_cost": 0.0024980976800000002,
+      "cost_available": true,
+      "param_b": 13.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    }
+  }
+}

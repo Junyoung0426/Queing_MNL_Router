@@ -1,0 +1,15 @@
+{
+  "time_local": "2026-01-19T17:10:45",
+  "platform": "Linux-6.8.0-86-generic-x86_64-with-glibc2.35",
+  "python": "3.10.12",
+  "torch": "2.8.0+cu128",
+  "git_commit": "9067948303f9dc4e98a946b8839a1f72c0f1aebc",
+  "n_after_dropna": 36497,
+  "n_train": 29197,
+  "d_ctx": 384,
+  "n_models": 11,
+  "use_cost": true,
+  "lambdas": [
+    0.0
+  ]
+}

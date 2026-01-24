@@ -1,0 +1,124 @@
+{
+  "dataset": "routerbench",
+  "metric": "(given in pkl)",
+  "n_rows": 36497,
+  "n_models": 11,
+  "tie_stats": {
+    "best_tie_rate": 0.9300490451269967,
+    "worst_tie_rate": 0.9236375592514453,
+    "avg_best_ties_per_row": 6.04342822697756,
+    "avg_worst_ties_per_row": 5.263172315532784
+  },
+  "models": {
+    "WizardLM/WizardLM-13B-V1.2": {
+      "avg_perf": 0.43112721593555636,
+      "best_count": 16335,
+      "worst_count": 21069,
+      "avg_cost": 7.291440118365893e-05,
+      "cost_available": true,
+      "param_b": 13.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "claude-instant-v1": {
+      "avg_perf": 0.5984135682384853,
+      "best_count": 23601,
+      "worst_count": 14264,
+      "avg_cost": 0.00023293712907910245,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "claude-v1": {
+      "avg_perf": 0.6301175439077185,
+      "best_count": 24860,
+      "worst_count": 12852,
+      "avg_cost": 0.0021446553963339453,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "claude-v2": {
+      "avg_perf": 0.6358056826588486,
+      "best_count": 24974,
+      "worst_count": 12517,
+      "avg_cost": 0.0024186040496479164,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "gpt-3.5-turbo-1106": {
+      "avg_perf": 0.6193207660903636,
+      "best_count": 23718,
+      "worst_count": 13379,
+      "avg_cost": 0.00024326004877113185,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "gpt-4-1106-preview": {
+      "avg_perf": 0.7813998410828287,
+      "best_count": 29882,
+      "worst_count": 6904,
+      "avg_cost": 0.0032927528289996436,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": false,
+      "param_source": "default"
+    },
+    "meta/code-llama-instruct-34b-chat": {
+      "avg_perf": 0.2022275803490698,
+      "best_count": 7772,
+      "worst_count": 29968,
+      "avg_cost": 0.00017204870624982875,
+      "cost_available": true,
+      "param_b": 34.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "meta/llama-2-70b-chat": {
+      "avg_perf": 0.3286886593418637,
+      "best_count": 12767,
+      "worst_count": 24748,
+      "avg_cost": 0.0002026650217826123,
+      "cost_available": true,
+      "param_b": 70.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "mistralai/mistral-7b-chat": {
+      "avg_perf": 0.30611146121599037,
+      "best_count": 11385,
+      "worst_count": 26626,
+      "avg_cost": 4.572428966764392e-05,
+      "cost_available": true,
+      "param_b": 7.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    },
+    "mistralai/mixtral-8x7b-chat": {
+      "avg_perf": 0.5471148313560018,
+      "best_count": 20706,
+      "worst_count": 16863,
+      "avg_cost": 0.00013457989971778504,
+      "cost_available": true,
+      "param_b": 14.0,
+      "param_in_name": true,
+      "param_source": "parsed_moe_effective"
+    },
+    "zero-one-ai/Yi-34B-Chat": {
+      "avg_perf": 0.6474915746499712,
+      "best_count": 24567,
+      "worst_count": 12900,
+      "avg_cost": 0.00018552225114392966,
+      "cost_available": true,
+      "param_b": 34.0,
+      "param_in_name": true,
+      "param_source": "parsed_dense"
+    }
+  }
+}

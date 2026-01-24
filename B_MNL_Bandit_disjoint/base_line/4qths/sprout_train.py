@@ -19,7 +19,7 @@ root_dir = os.path.dirname(base_line_dir)
 project_root = os.path.dirname(root_dir)
 data_dir = os.path.join(project_root, "Data")
 
-target_config_dir = os.path.join(root_dir, "train_by_model", dataset_name)
+target_config_dir = os.path.join(root_dir, "ACQB", dataset_name)
 if not os.path.exists(target_config_dir):
     raise FileNotFoundError(f"Config dir not found: {target_config_dir}")
 
