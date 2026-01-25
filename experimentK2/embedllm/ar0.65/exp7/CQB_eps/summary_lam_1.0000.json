@@ -1,0 +1,21 @@
+{
+  "seed": 48,
+  "lam_cost": 1.0,
+  "avg_regret": 0.38591196514836246,
+  "final_Q_gap": 227.0,
+  "target_explore_rate": 0.01,
+  "alpha_coef": 0.0001,
+  "c1": 0.5535,
+  "mean_explore_rate": 0.01,
+  "cqb_tau": 1,
+  "explore_rate": 0.009605763458074845,
+  "arrival rate": 0.65,
+  "dep_router_mean": 0.6080285906791687,
+  "n_stream": 1000,
+  "offline_total": 0,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "none",
+  "elapsed_seconds": 531.4992640018463,
+  "elapsed_minutes": 8.858321066697439
+}
