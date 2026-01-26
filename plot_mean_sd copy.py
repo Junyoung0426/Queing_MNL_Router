@@ -12,78 +12,30 @@ import matplotlib.pyplot as plt
 REG_AVG_RE = re.compile(r"regret_mean_sd_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
 Q_AVG_RE = re.compile(r"qgap_mean_sd_lam_([0-9]+(?:\.[0-9]+)?)\.csv$")
 
-COLOR_MAP = {
-    "RAND":    "#7f7f7f",  # gray
-    "Q_UCB":   "#ff7f0e",  # orange
-    "Q_THS":   "#2ca02c",  # green
-    "CQB_eps": "#8c564b",  # brown
-    "ACQB":    "#d62728",  # red (ours가 튐)
-    "ACQB-CL": "#9467bd",  # purple
-}
-
-
-
-FALLBACK_COLORS = [
-    "#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#000000", "#7F7F7F"
-]
-
-ALG_LS = {
-    "RAND": "--",
-    "Q_UCB": ":",
-    "Q_THS": "-.",
-    "CQB_eps": "-.",
-    "ACQB": "-",
-    "ACQB-CL": "-",
-}
-ALG_MARKER = {
-    "RAND": "X",       # x
-    "Q_UCB": "s",      # 네모
-    "Q_THS": "^",      # 세모(위)
-    "CQB_eps": "D",    # 다이아
-    "ACQB": "*",       # 별
-    "ACQB-CL": "v",    # 세모(아래)
-}
-
-
-def _smooth_ma(y: np.ndarray, win: int) -> np.ndarray:
-    y = np.asarray(y, dtype=np.float64)
-    if y.size == 0:
-        return y
-    w = int(win)
-    if w <= 1:
-        return y
-    w = min(w, y.size)
-    pad_l = w // 2
-    pad_r = w - 1 - pad_l
-    yp = np.pad(y, (pad_l, pad_r), mode="edge")
-    k = np.ones(w, dtype=np.float64) / float(w)
-    return np.convolve(yp, k, mode="valid")
-
 
 def set_paper_style():
     plt.rcParams.update({
         "figure.dpi": 120,
         "savefig.dpi": 300,
         "font.family": "serif",
-        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "DejaVu Serif"],
         "font.size": 10,
         "axes.titlesize": 11,
         "axes.labelsize": 9,
         "axes.linewidth": 1.0,
-        "xtick.labelsize": 13,
-        "ytick.labelsize": 13,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
         "xtick.direction": "out",
         "ytick.direction": "out",
         "xtick.major.size": 3.0,
         "ytick.major.size": 3.0,
         "xtick.major.width": 1.0,
         "ytick.major.width": 1.0,
-        "legend.fontsize": 12,
+        "legend.fontsize": 8,
         "legend.frameon": True,
         "legend.fancybox": False,
         "legend.framealpha": 1.0,
         "legend.edgecolor": "black",
-        "lines.linewidth": 1.5,
+        "lines.linewidth": 1.0,
         "axes.grid": False,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
@@ -99,20 +51,9 @@ def parse_args():
     ap.add_argument("--exclude", type=str, nargs="*", default=["plots"])
     ap.add_argument("--fig_w", type=float, default=5.0)
     ap.add_argument("--fig_h", type=float, default=4.0)
-
-    ap.add_argument("--sd_alpha", type=float, default=0.08)
-    ap.add_argument("--sd_mult", type=float, default=0.7)
+    ap.add_argument("--sd_alpha", type=float, default=0.2)
+    ap.add_argument("--sd_mult", type=float, default=1.0)
     ap.add_argument("--no_sd", action="store_true")
-
-    ap.add_argument("--marker_every", type=int, default=1500)
-    ap.add_argument("--marker_offset_step", type=int, default=500)
-    ap.add_argument("--marker_size", type=float, default=5.0)
-    ap.add_argument("--marker_mew", type=float, default=0.6)
-    ap.add_argument("--marker_alpha", type=float, default=0.95)
-    ap.add_argument("--marker_style", type=str, default="o")
-
-    ap.add_argument("--ma_win", type=int, default=101)
-
     ap.add_argument(
         "--mode",
         type=str,
@@ -164,7 +105,7 @@ def _annotate_lambda(ax, lam: float):
         transform=ax.transAxes,
         ha="right",
         va="top",
-        fontsize=12,
+        fontsize=9,
         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="black", linewidth=0.8, alpha=1.0),
     )
 
@@ -177,42 +118,6 @@ def _parse_lambda_from_name(name: str, is_q: bool):
         return float(m.group(1))
     except Exception:
         return None
-
-
-def _color_for_alg(alg: str, idx: int) -> str:
-    key = str(alg)
-    if key in COLOR_MAP:
-        return COLOR_MAP[key]
-    return FALLBACK_COLORS[idx % len(FALLBACK_COLORS)]
-
-
-def _ls_for_alg(alg: str, idx: int) -> str:
-    key = str(alg)
-    if key in ALG_LS:
-        return ALG_LS[key]
-    ls_list = ["-", "--", "-.", ":"]
-    return ls_list[idx % len(ls_list)]
-
-
-def _marker_indices_by_t(t: np.ndarray, every: int, offset: int) -> np.ndarray:
-    t = np.asarray(t, dtype=np.int64)
-    if t.size == 0:
-        return np.array([], dtype=np.int64)
-    step = max(1, int(every))
-    off = int(offset)
-    start = off
-    if start < int(t[0]):
-        k = (int(t[0]) - start + step - 1) // step
-        start = start + k * step
-    xs = []
-    v = start
-    t_last = int(t[-1])
-    while v <= t_last:
-        i = int(np.searchsorted(t, v))
-        if i < t.size and int(t[i]) == v:
-            xs.append(i)
-        v += step
-    return np.asarray(xs, dtype=np.int64)
 
 
 def collect_avg(root_dir: Path, include, exclude):
@@ -347,38 +252,18 @@ def main():
 
             fig = plt.figure(figsize=(args.fig_w, args.fig_h))
             ax = fig.gca()
-            for i, alg in enumerate(alg_names):
+            for alg in alg_names:
                 d = series[alg]
-                c = _color_for_alg(alg, i)
-                ls = _ls_for_alg(alg, i)
-                off = i * int(args.marker_offset_step)
-                midx = _marker_indices_by_t(d["t"], args.marker_every, off)
-
-                ax.plot(d["t"], d["mu_reg"], label=_rename_for_legend(alg), color=c, linestyle=ls)
-
-                if midx.size > 0:
-                    ax.plot(
-                        d["t"][midx], d["mu_reg"][midx],
-                        linestyle="none",
-                        marker=ALG_MARKER.get(alg, "o"),
-                        markersize=float(args.marker_size),
-                        markerfacecolor=c,
-                        markeredgecolor=c,
-                        markeredgewidth=float(args.marker_mew),
-                        alpha=float(args.marker_alpha),
-                    )
-
-                if (not args.no_sd) and (d["sd_reg"].size > 0):
+                ax.plot(d["t"], d["mu_reg"], label=_rename_for_legend(alg))
+                if not args.no_sd:
                     ax.fill_between(
                         d["t"],
                         d["mu_reg"] - m * d["sd_reg"],
                         d["mu_reg"] + m * d["sd_reg"],
-                        color=c,
                         alpha=float(args.sd_alpha),
                     )
-
-            ax.set_xlabel("t (time)", fontsize=13)
-            ax.set_ylabel("Cumulative regret", fontsize=13)
+            ax.set_xlabel("t (time)")
+            ax.set_ylabel("Cumulative regret")
             _paper_axes(ax)
             ax.legend(loc="upper left")
             _bold_legend_label(ax, "ACQB(ours)")
@@ -390,26 +275,19 @@ def main():
 
             fig = plt.figure(figsize=(args.fig_w, args.fig_h))
             ax = fig.gca()
-            for i, alg in enumerate(alg_names):
+            for alg in alg_names:
                 d = series[alg]
-                c = _color_for_alg(alg, i)
-                ls = _ls_for_alg(alg, i)
-
-                mu_q_s = _smooth_ma(d["mu_q"], args.ma_win)
-                ax.plot(d["t"], mu_q_s, label=_rename_for_legend(alg), color=c, linestyle=ls)
-
-                if (not args.no_sd) and (d["sd_q"].size > 0):
+                ax.plot(d["t"], d["mu_q"], label=_rename_for_legend(alg))
+                if not args.no_sd:
                     ax.fill_between(
                         d["t"],
-                        mu_q_s - m * d["sd_q"],
-                        mu_q_s + m * d["sd_q"],
-                        color=c,
+                        d["mu_q"] - m * d["sd_q"],
+                        d["mu_q"] + m * d["sd_q"],
                         alpha=float(args.sd_alpha),
                     )
-
             ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
-            ax.set_xlabel("t (time)", fontsize=13)
-            ax.set_ylabel(r"$Q(t)-Q_*(t)$", fontsize=13)
+            ax.set_xlabel("t (time)")
+            ax.set_ylabel(r"$Q(t)-Q_*(t)$")
             _paper_axes(ax)
             ax.legend(loc="upper left")
             _bold_legend_label(ax, "ACQB(ours)")
@@ -441,38 +319,16 @@ def main():
 
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
-        ls_list = ["-", "--", "-.", ":"]
-        for j, lam in enumerate(lams_here):
+        for lam in lams_here:
             d = series_lam[lam]
-            c = FALLBACK_COLORS[j % len(FALLBACK_COLORS)]
-            ls = ls_list[j % len(ls_list)]
-            off = j * int(args.marker_offset_step)
-            midx = _marker_indices_by_t(d["t"], args.marker_every, off)
-
-            ax.plot(d["t"], d["mu_reg"], label=rf"$\lambda={lam:.2f}$", color=c, linestyle=ls)
-
-            if midx.size > 0:
-                ax.plot(
-                    d["t"][midx], d["mu_reg"][midx],
-                    linestyle="none",
-                    marker=str(args.marker_style),
-                    markersize=float(args.marker_size),
-                    markerfacecolor=c,
-                    markeredgecolor=c,
-                    markeredgewidth=float(args.marker_mew),
-                    alpha=float(args.marker_alpha),
-                )
-
-
-            if (not args.no_sd) and (d["sd_reg"].size > 0):
+            ax.plot(d["t"], d["mu_reg"], label=rf"$\lambda={lam:.2f}$")
+            if not args.no_sd:
                 ax.fill_between(
                     d["t"],
                     d["mu_reg"] - m * d["sd_reg"],
                     d["mu_reg"] + m * d["sd_reg"],
-                    color=c,
                     alpha=float(args.sd_alpha),
                 )
-
         ax.set_xlabel("t (time)")
         ax.set_ylabel("Cumulative regret")
         _paper_axes(ax)
@@ -484,23 +340,16 @@ def main():
 
         fig = plt.figure(figsize=(args.fig_w, args.fig_h))
         ax = fig.gca()
-        for j, lam in enumerate(lams_here):
+        for lam in lams_here:
             d = series_lam[lam]
-            c = FALLBACK_COLORS[j % len(FALLBACK_COLORS)]
-            ls = ls_list[j % len(ls_list)]
-
-            mu_q_s = _smooth_ma(d["mu_q"], args.ma_win)
-            ax.plot(d["t"], mu_q_s, label=rf"$\lambda={lam:.2f}$", color=c, linestyle=ls)
-
-            if (not args.no_sd) and (d["sd_q"].size > 0):
+            ax.plot(d["t"], d["mu_q"], label=rf"$\lambda={lam:.2f}$")
+            if not args.no_sd:
                 ax.fill_between(
                     d["t"],
-                    mu_q_s - m * d["sd_q"],
-                    mu_q_s + m * d["sd_q"],
-                    color=c,
+                    d["mu_q"] - m * d["sd_q"],
+                    d["mu_q"] + m * d["sd_q"],
                     alpha=float(args.sd_alpha),
                 )
-
         ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel("t (time)")
         ax.set_ylabel(r"$Q(t)-Q_*(t)$")

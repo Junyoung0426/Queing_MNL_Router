@@ -97,7 +97,8 @@ class QueueConfig:
 
     hist_init_capacity: int = 2048
 
-    offline_partition_mode: str = "util" # "random"
+
+    offline_partition_mode: str = "util"
     offline_total_ratio: float = 0.10
     offline_tie_eps: float = 1e-9
     offline_seed_min_per_model: int = 10
@@ -114,38 +115,15 @@ class QueueConfig:
     dropout_rate: float = 0.0
     noise_level: float = 0.05
 
-    supcon_temp: float = 0.10
+    supcon_temp: float = 0.07
     supcon_grad_clip: float = 1.0
     supcon_weight_decay: float = 1e-4
-
-    supcon_pos_strategy: str = "top1"
-    supcon_topk_max_k: int = 100
-    supcon_topk_q: float = 1.0
-    supcon_topk_beta: float = 5.0
-    supcon_topk_delta: float = 1.0
-
-    supcon_tie_eps: float = 1e-4
-    balance_min_classes: int = 8
-    balance_per_class: int = 0
-
-    supcon_pos_k: int = 8
-    supcon_neg_k: int = 64
-    supcon_alpha: float = 0.2
 
     supcon_uc_tau_pos: float = 0.7
     supcon_uc_tau_neg: float = 0.0
     supcon_uc_mean_center: bool = True
-    supcon_uc_pos_cap: int = 16
+    supcon_uc_neg_cap: int = 64
     supcon_uc_require_neg: bool = True
-
-    supcon_sem_topk: int = 8
-    supcon_sem_thresh: float = 0.65
-    supcon_sem_hash_bits: int = 16
-    supcon_pos_cap: int = 64
-
-    supcon_kmeans_k: int = 64
-    supcon_kmeans_mb: int = 4096
-    supcon_kmeans_embed_bs: int = 2048
 
     @property
     def d_proj(self) -> int:

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+
 from queue_config import QueueConfig
 
 
-def _proj(router, x):
+def _proj(router, x: torch.Tensor) -> torch.Tensor:
     if hasattr(router, "B_projection"):
         return router.B_projection(x)
     if hasattr(router, "forward_ctx_supcon"):
@@ -15,112 +16,64 @@ def _proj(router, x):
     return router.B(x)
 
 
-def _get_cfg(cfg, name, default):
+def _get_cfg(cfg: QueueConfig | None, name: str, default):
     if cfg is None:
         return default
     return getattr(cfg, name, default)
 
 
-class SemanticMultiPositiveSupConLoss(nn.Module):
-    def __init__(self, temperature: float = 0.07, pos_topk: int = 8, pos_sim_thresh: float = 0.6):
-        super().__init__()
-        self.temperature = float(temperature)
-        self.pos_topk = int(pos_topk)
-        self.pos_sim_thresh = float(pos_sim_thresh)
-
-    def forward(self, z: torch.Tensor, raw_x: torch.Tensor) -> torch.Tensor:
-        device = z.device
-        B = int(z.shape[0])
-        if B < 2:
-            return z.new_tensor(0.0)
-
-        z = F.normalize(z, dim=1)
-        x = F.normalize(raw_x, dim=1)
-
-        sim_raw = x @ x.T
-        eye = torch.eye(B, device=device, dtype=torch.bool)
-        sim_raw = sim_raw.masked_fill(eye, -1e9)
-
-        k = min(self.pos_topk, B - 1)
-        if k <= 0:
-            return z.new_tensor(0.0)
-
-        topv, topi = sim_raw.topk(k=k, dim=1)
-        mask = topv >= self.pos_sim_thresh
-        if mask.numel() > 0:
-            mask[:, 0] = True
-
-        w_pos = torch.where(mask, topv.clamp_min(0.0), torch.zeros_like(topv))
-        pos_w = torch.zeros((B, B), device=device, dtype=z.dtype)
-        pos_w.scatter_(1, topi, w_pos.to(dtype=z.dtype))
-        pos_w = pos_w.masked_fill(eye, 0.0)
-
-        sim_z = (z @ z.T) / max(self.temperature, 1e-6)
-        sim_z = sim_z.masked_fill(eye, -1e9)
-        log_prob = sim_z - torch.logsumexp(sim_z, dim=1, keepdim=True)
-
-        denom = pos_w.sum(dim=1)
-        valid = denom > 0
-        if not bool(valid.any().item()):
-            return z.new_tensor(0.0)
-
-        loss_i = -(log_prob * pos_w).sum(dim=1) / denom.clamp_min(1e-12)
-        return loss_i[valid].mean()
+def _util_profile(u: torch.Tensor, mean_center: bool) -> torch.Tensor:
+    if mean_center:
+        u = u - u.mean(dim=1, keepdim=True)
+    return F.normalize(u, dim=1)
 
 
-def _simhash_labels(X: np.ndarray, seed: int, n_bits: int) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float32)
-    N, D = X.shape
-    n_bits = int(max(1, min(int(n_bits), 30)))
-    rng = np.random.RandomState(int(seed))
-    R = rng.normal(size=(D, n_bits)).astype(np.float32)
-    bits = ((X @ R) > 0).astype(np.int64)
-    shifts = (1 << np.arange(n_bits, dtype=np.int64))
-    return (bits @ shifts).astype(np.int64)
+def supcon_loss_posmask_with_denmask(
+    z: torch.Tensor,
+    pos_w: torch.Tensor,
+    den_mask: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    B = int(z.shape[0])
+    if B < 2:
+        return z.sum() * 0.0
+
+    z = F.normalize(z, dim=1)
+    eye = torch.eye(B, device=z.device, dtype=torch.bool)
+
+    den = den_mask.to(device=z.device, dtype=torch.bool).masked_fill(eye, False)
+    pw = pos_w.to(device=z.device, dtype=z.dtype).masked_fill(eye, 0.0)
+
+    sim = (z @ z.T) / float(temperature)
+    sim = sim.masked_fill(~den, -1e9)
+
+    pos_sum = pw.sum(dim=1)
+    valid = pos_sum > 0
+    if not bool(valid.any().item()):
+        return z.sum() * 0.0
+
+    log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
+    loss_i = -(log_prob * pw).sum(dim=1) / pos_sum.clamp_min(1e-12)
+    return loss_i[valid].mean()
 
 
-def sample_balanced_batch_indices(labels: np.ndarray, bs: int, rng: np.random.RandomState, min_classes: int, per_class: int) -> np.ndarray:
-    labels = np.asarray(labels, dtype=np.int64)
-    N = int(labels.shape[0])
-    bs = int(bs)
-
-    present = np.unique(labels)
-    if present.size == 0:
-        return rng.choice(N, size=bs, replace=(N < bs)).astype(np.int64)
-
-    C = min(int(min_classes), int(present.size))
-    chosen = rng.choice(present, size=C, replace=False)
-
-    take = int(per_class)
-    if take * C > bs:
-        take = max(1, bs // C)
-
-    idx_list = []
-    for c in chosen:
-        pool = np.where(labels == c)[0]
-        if pool.size == 0:
-            continue
-        sel = rng.choice(pool, size=take, replace=(pool.size < take))
-        idx_list.append(sel)
-
-    if len(idx_list) == 0:
-        return rng.choice(N, size=bs, replace=(N < bs)).astype(np.int64)
-
-    idx = np.concatenate(idx_list)
-    if idx.size < bs:
-        extra = rng.choice(N, size=(bs - idx.size), replace=True)
-        idx = np.concatenate([idx, extra])
-    if idx.size > bs:
-        idx = idx[:bs]
-    return idx.astype(np.int64)
-
-
-def offline_pretrain_B_supcon(router, X_ctx_off, util_off=None, n_models=None, cfg: QueueConfig | None = None):
-    if _get_cfg(cfg, "b_type", "").lower().strip() == "none":
+def offline_pretrain_B_supcon(
+    router,
+    X_ctx_off,
+    util_off=None,
+    n_models=None,
+    cfg: QueueConfig | None = None,
+):
+    if str(_get_cfg(cfg, "b_type", "")).lower().strip() == "none":
         print("[Offline] skipped (b_type=none)")
         return
 
+    if util_off is None:
+        print("[Offline] skipped (util_off required)")
+        return
+
     X_np = np.asarray(X_ctx_off, dtype=np.float32)
+    U_np = np.asarray(util_off, dtype=np.float32)
     N = int(X_np.shape[0])
     if N < 2:
         print("[Offline] skipped (N_off<2)")
@@ -131,72 +84,119 @@ def offline_pretrain_B_supcon(router, X_ctx_off, util_off=None, n_models=None, c
         print("[Offline] skipped (offline_epochs<=0)")
         return
 
-    router.unfreeze_B(lr_b=float(_get_cfg(cfg, "offline_lr_B", 1e-3)))
+    lr = float(_get_cfg(cfg, "offline_lr_B", 1e-3))
+    router.unfreeze_B(lr_b=lr)
+
     wd = float(_get_cfg(cfg, "supcon_weight_decay", 0.0))
-    if wd > 0:
-        router.opt_b = torch.optim.AdamW(router.B.parameters(), lr=float(_get_cfg(cfg, "offline_lr_B", 1e-3)), weight_decay=wd)
+    if wd > 0.0:
+        params = [p for p in router.B.parameters() if p.requires_grad]
+        if len(params) == 0:
+            print("[Offline] skipped (no trainable B params)")
+            return
+        router.opt_b = torch.optim.AdamW(params, lr=lr, weight_decay=wd)
 
     if getattr(router, "opt_b", None) is None:
-        print("[Offline] skipped (no B params)")
+        print("[Offline] skipped (no B optimizer)")
         return
 
-    seed = int(_get_cfg(cfg, "seed", 0))
-    rng = np.random.RandomState(seed + 2024)
-
     X_t = torch.from_numpy(X_np).to(device=router.dev, dtype=torch.float32)
+    U_t = torch.from_numpy(U_np).to(device=router.dev, dtype=torch.float32)
 
     bs = int(_get_cfg(cfg, "supcon_bs", 256))
     bs = min(bs, N)
     temp = float(_get_cfg(cfg, "supcon_temp", 0.07))
     grad_clip = float(_get_cfg(cfg, "supcon_grad_clip", 0.0))
 
-    sem_topk = int(_get_cfg(cfg, "supcon_sem_topk", 8))
-    sem_thresh = float(_get_cfg(cfg, "supcon_sem_thresh", 0.6))
-    hash_bits = int(_get_cfg(cfg, "supcon_sem_hash_bits", 16))
+    tau_pos = float(_get_cfg(cfg, "supcon_uc_tau_pos", 0.9))
+    tau_neg = float(_get_cfg(cfg, "supcon_uc_tau_neg", 0.1))
+    mean_center = bool(_get_cfg(cfg, "supcon_uc_mean_center", True))
+    neg_cap = int(_get_cfg(cfg, "supcon_uc_neg_cap", 64))
+    require_neg = bool(_get_cfg(cfg, "supcon_uc_require_neg", True))
 
-    labels_np = _simhash_labels(X_np, seed=seed + 9917, n_bits=hash_bits)
+    loader = DataLoader(
+        TensorDataset(X_t, U_t),
+        batch_size=bs,
+        shuffle=True,
+        drop_last=False,
+    )
 
-    min_classes = int(_get_cfg(cfg, "balance_min_classes", 8))
-    per_class = int(_get_cfg(cfg, "balance_per_class", 0)) or max(1, bs // max(1, min_classes))
-
-    loss_fn = SemanticMultiPositiveSupConLoss(temperature=temp, pos_topk=sem_topk, pos_sim_thresh=sem_thresh)
-
-    print(f"[Offline] semantic-simhash epochs={epochs} bs={bs} temp={temp} topk={sem_topk} thresh={sem_thresh} bits={hash_bits}")
+    print(
+        f"[Offline] utilcos_singlepos_top1_negTopK "
+        f"epochs={epochs} bs={bs} temp={temp} tau_pos={tau_pos} tau_neg={tau_neg} neg_cap={neg_cap}"
+    )
 
     router.train()
     for ep in range(1, epochs + 1):
         tot = 0.0
         steps = 0
-        avg_pos = 0.0
+        valid_rows = 0
+        total_rows = 0
+        avg_neg = 0.0
 
-        n_batches = max(1, int(np.ceil(N / bs)))
-        for _ in range(n_batches):
-            idx_np = sample_balanced_batch_indices(labels_np, bs=bs, rng=rng, min_classes=min_classes, per_class=per_class)
-            idx = torch.as_tensor(idx_np, device=router.dev, dtype=torch.long)
-            xb = X_t[idx]
-
+        for xb, ub in loader:
             router.opt_b.zero_grad(set_to_none=True)
+
             z = _proj(router, xb)
-            loss = loss_fn(z, xb)
+
+            uprof = _util_profile(ub, mean_center=mean_center)
+            c = uprof @ uprof.T
+            B = int(c.shape[0])
+            eye = torch.eye(B, device=c.device, dtype=torch.bool)
+
+            pos_cand = (c > tau_pos) & (~eye)
+            neg_cand = (c < tau_neg) & (~eye)
+
+            if neg_cap > 0:
+                neg_mask = torch.zeros((B, B), device=c.device, dtype=torch.bool)
+                neg_score = (-c).masked_fill(~neg_cand, -1e9)
+                k = min(int(neg_cap), B - 1)
+                if k > 0:
+                    vals, idx = torch.topk(neg_score, k=k, dim=1, largest=True)
+                    keep = vals > -1e8
+                    neg_mask.scatter_(1, idx, keep)
+            else:
+                neg_mask = neg_cand
+
+            pos_w = torch.zeros((B, B), device=c.device, dtype=torch.float32)
+            den_mask = torch.zeros((B, B), device=c.device, dtype=torch.bool)
+
+            for i in range(B):
+                pidx = torch.where(pos_cand[i])[0]
+                if pidx.numel() == 0:
+                    continue
+
+                nidx = torch.where(neg_mask[i])[0]
+                if require_neg and nidx.numel() == 0:
+                    continue
+
+                j = pidx[torch.argmax(c[i, pidx])]
+                pos_w[i, j] = 1.0
+                den_mask[i, j] = True
+
+                if nidx.numel() > 0:
+                    nidx = nidx[nidx != j]
+                    if nidx.numel() > 0:
+                        den_mask[i, nidx] = True
+
+            loss = supcon_loss_posmask_with_denmask(z, pos_w, den_mask, temperature=temp)
             loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(router.B.parameters(), max_norm=grad_clip)
+            if float(grad_clip) > 0.0:
+                torch.nn.utils.clip_grad_norm_(router.B.parameters(), max_norm=float(grad_clip))
             router.opt_b.step()
 
             tot += float(loss.item())
             steps += 1
-            with torch.no_grad():
-                x = F.normalize(xb, dim=1)
-                sim_raw = x @ x.T
-                sim_raw = sim_raw.masked_fill(torch.eye(sim_raw.shape[0], device=sim_raw.device, dtype=torch.bool), -1e9)
-                k = min(sem_topk, sim_raw.shape[0] - 1)
-                if k > 0:
-                    vals, _ = sim_raw.topk(k=k, dim=1)
-                    pos_cnt = (vals >= sem_thresh).sum(dim=1)
-                    pos_cnt = torch.maximum(pos_cnt, torch.ones_like(pos_cnt))
-                    avg_pos += float(pos_cnt.float().mean().item())
 
-        print(f"[Offline] epoch={ep:3d} loss={tot/max(1,steps):.4f} avg_pos={avg_pos/max(1,steps):.1f}")
+            with torch.no_grad():
+                row_has_pos = (pos_w.sum(dim=1) > 0)
+                valid_rows += int(row_has_pos.sum().item())
+                total_rows += int(B)
+                avg_neg += float(neg_mask.sum(dim=1).float().mean().item())
+
+        ok_ratio = float(valid_rows) / float(max(1, total_rows))
+        print(
+            f"[Offline] epoch={ep:3d} loss={tot/max(1,steps):.4f} ok_ratio={ok_ratio:.3f} avg_neg={avg_neg/max(1,steps):.2f}"
+        )
 
     router.freeze_B()
     router.eval()

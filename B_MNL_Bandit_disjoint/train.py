@@ -110,7 +110,15 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--arrival_rate", type=float, default=None)
     ap.add_argument("--cache_dir", type=str, default=None)
     ap.add_argument("--cache_build", action="store_true")
+
+    ap.add_argument("--supcon_uc_tau_neg", type=float, default=None)
+    ap.add_argument("--supcon_uc_tau_pos", type=float, default=None)
+    ap.add_argument("--supcon_uc_neg_cap", type=int, default=None)
+    ap.add_argument("--supcon_temp", type=float, default=None)
+    ap.add_argument("--offline_epochs", type=int, default=None)
+
     return ap
+
 
 
 def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
@@ -130,6 +138,18 @@ def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
         cfg.alpha_coef = float(args.alpha_coef)
     if getattr(args, "arrival_rate", None) is not None:
         cfg.arrival_rate = float(args.arrival_rate)
+
+    if getattr(args, "supcon_uc_tau_neg", None) is not None:
+        cfg.supcon_uc_tau_neg = float(args.supcon_uc_tau_neg)
+    if getattr(args, "supcon_uc_tau_pos", None) is not None:
+        cfg.supcon_uc_tau_pos = float(args.supcon_uc_tau_pos)
+    if getattr(args, "supcon_uc_neg_cap", None) is not None:
+        cfg.supcon_uc_neg_cap = int(args.supcon_uc_neg_cap)
+    if getattr(args, "supcon_temp", None) is not None:
+        cfg.supcon_temp = float(args.supcon_temp)
+    if getattr(args, "offline_epochs", None) is not None:
+        cfg.offline_epochs = int(args.offline_epochs)
+
 
 
 def _ensure_prompt_column(df: pd.DataFrame):

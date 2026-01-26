@@ -1,40 +1,57 @@
-# queue_config.py
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 import math
 import torch
 
+
 def _eta_mean(c1: float, T: int) -> float:
-    if T <= 0: return 0.0
+    if T <= 0:
+        return 0.0
     s = 0.0
     for t in range(1, T + 1):
         v = float(c1) / math.sqrt(t + 1.0)
         s += 1.0 if v > 1.0 else v
     return s / float(T)
 
+
 def _solve_c1(target_explore_rate: float, arrival_rate: float, max_steps: int) -> float:
     a = float(arrival_rate)
     T = int(max_steps)
-    if T <= 0 or a <= 0.0: return 0.0
+    if T <= 0 or a <= 0.0:
+        return 0.0
+
     p = float(target_explore_rate)
-    if p <= 0.0: return 0.0
-    if p >= a: return float(1.01 * math.sqrt(T + 1.0))
+    if p <= 0.0:
+        return 0.0
+
+    if p >= a:
+        return float(1.01 * math.sqrt(T + 1.0))
+
     target_eta = p / a
+
     lo, hi = 0.0, 1.0
     for _ in range(60):
-        if _eta_mean(hi, T) >= target_eta: break
+        if _eta_mean(hi, T) >= target_eta:
+            break
         hi *= 2.0
+
     for _ in range(80):
         mid = 0.5 * (lo + hi)
-        if _eta_mean(mid, T) >= target_eta: hi = mid
-        else: lo = mid
+        if _eta_mean(mid, T) >= target_eta:
+            hi = mid
+        else:
+            lo = mid
+
     return float(hi)
+
 
 def _first_t_eta_lt_1(c1: float) -> int:
     c1 = float(c1)
-    if c1 <= 0.0: return 1
+    if c1 <= 0.0:
+        return 1
     tau = int(math.floor(c1 * c1))
     return 1 if tau < 1 else tau
+
 
 @dataclass
 class QueueConfig:
@@ -60,90 +77,68 @@ class QueueConfig:
     r_eps: float = 1e-6
     r_lo: float = 0.1
     r_hi: float = 0.99
+
     kappa: float = 4.0
     target_explore_rate: float = 0.01
     lambda_0: float = 1.0
-    alpha_coef: float = 0.0001
+    alpha_coef: float = 1e-4
 
-    theta_solver: str = "lbfgs"
     lbfgs_max_iter: int = 500
     lbfgs_history_size: int = 500
     lbfgs_line_search: str = "strong_wolfe"
     hist_init_capacity: int = 2048
 
-    # --- Offline Partition ---
+    offline_partition_mode: str = "util"
     offline_total_ratio: float = 0.10
-    offline_tie_eps: float = 1e-9
     offline_seed_min_per_model: int = 10
-    offline_per_model = 5
-    offline_epochs = 2   # 또는 4
-    supcon_bs = 128      # offline 샘플 수가 대략 K*5면 64~128이 안전
-    offline_lr_B = 3e-4
+    offline_per_model: int = 5
+    offline_tie_eps: float = 1e-9
 
-    # --- B (Router) Config ---
-    _d_proj: int = -1  
-    b_type: str = "mlp"         
+    offline_epochs: int = 2
+    supcon_bs: int = 128
+    offline_lr_B: float = 3e-4
+
+    _d_proj: int = -1
+    b_type: str = "mlp"
     b_hidden_mult: int = 2
     normalize_z: bool = True
     dropout_rate: float = 0.2
-    noise_level: float = 0.05 
+    noise_level: float = 0.05
 
-    # --- Common SupCon Params ---
-    # offline_epochs: int = 1000
-    # offline_lr_B: float = 3e-4
-    # supcon_bs: int = 512
     supcon_temp: float = 0.07
     supcon_grad_clip: float = 1.0
     supcon_weight_decay: float = 1e-4
 
-    # --- Strategy Specific Params ---
-    # 1) Tie & Balancing (b_contrastive_util_multipos)
-    supcon_exact_tie: bool = False  # True면 tie_eps 무시하고 완전 동일만 Tie
-    supcon_tie_eps: float = 1e-4
-    balance_min_classes: int = 8
-    balance_per_class: int = 64
-
-    # 2) Utility Top-K (b_contrastive_util_topk)
-    supcon_pos_k: int = 8
-    supcon_neg_k: int = 64
-    supcon_alpha: float = 0.2  # Softmax scaling inside loss
-
-    # 3) KMeans Pseudo (b_contrastive_kmeans_pseudo)
-    supcon_kmeans_k: int = 64
-    supcon_kmeans_refresh: int = 200
-    supcon_kmeans_mb: int = 4096
-
-    # 4) Distillation (b_contrastive_util_topk_distill)
-    supcon_tau: float = 0.5          # Teacher softmax temp
-    supcon_beta_distill: float = 2.0 # Distillation weight
-    supcon_gamma_contrast: float = 1.0 # Contrastive weight
-
-    supcon_pos_strategy: str = "unused"
-    supcon_topk_max_k: int = 100
-    supcon_topk_q: float = 1
-    supcon_topk_beta: float = 5.0
-    supcon_topk_delta: float = 1.0
+    supcon_uc_tau_pos: float = 0.9
+    supcon_uc_tau_neg: float = 0.1
+    supcon_uc_mean_center: bool = True
+    supcon_uc_neg_cap: int = 64
+    supcon_uc_pos_pick: str = "top1"
+    supcon_uc_require_neg: bool = True
 
     @property
     def d_proj(self) -> int:
         if self._d_proj == -1:
-            if self.d_ctx is not None: return self.d_ctx
-            return 128 
-        return self._d_proj
+            if self.d_ctx is not None:
+                return int(self.d_ctx)
+            return 128
+        return int(self._d_proj)
 
     @d_proj.setter
     def d_proj(self, value: int):
-        self._d_proj = value
+        self._d_proj = int(value)
 
     @property
     def c1(self) -> float:
-        if not self.explore_enabled: return 0.0
+        if not self.explore_enabled:
+            return 0.0
         v = _solve_c1(self.target_explore_rate, self.arrival_rate, self.max_steps)
         return round(float(v), 4)
 
     @property
     def mean_explore_rate(self) -> float:
-        if not self.explore_enabled: return 0.0
+        if not self.explore_enabled:
+            return 0.0
         T = int(self.max_steps)
         a = float(self.arrival_rate)
         v = a * _eta_mean(float(self.c1), T)
@@ -151,8 +146,8 @@ class QueueConfig:
 
     @property
     def cqb_tau(self) -> int:
-        if not self.explore_enabled: return 1
+        if not self.explore_enabled:
+            return 1
         T = int(self.max_steps)
         tau = _first_t_eta_lt_1(float(self.c1))
-        if tau > T: tau = T
-        return tau
+        return int(min(tau, T))
