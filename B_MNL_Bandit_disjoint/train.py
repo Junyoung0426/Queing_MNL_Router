@@ -1,5 +1,5 @@
-# B_MNL_Bandit_disjoint/train.py
 from __future__ import annotations
+
 import sys
 import subprocess
 import argparse
@@ -110,7 +110,6 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--arrival_rate", type=float, default=None)
     ap.add_argument("--cache_dir", type=str, default=None)
     ap.add_argument("--cache_build", action="store_true")
-
     return ap
 
 
@@ -174,6 +173,34 @@ def compute_acc_cost_util_all(
     return acc, util
 
 
+def build_offline_partition_strict_only_per_model(
+    util_train: np.ndarray, n_per_model: int, tie_eps: float, seed: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    U = np.asarray(util_train, dtype=np.float32)
+    N, K = U.shape
+    rng = np.random.RandomState(int(seed))
+
+    mx = U.max(axis=1, keepdims=True)
+    is_top = (U >= (mx - float(tie_eps)))
+    tie_size = is_top.sum(axis=1)
+    strict_idx = np.where(tie_size == 1)[0].astype(np.int64)
+    winners = np.argmax(U, axis=1).astype(np.int64)
+
+    chosen_all = []
+    for k in range(K):
+        pool = strict_idx[winners[strict_idx] == k]
+        if pool.size == 0:
+            continue
+        take = min(int(n_per_model), int(pool.size))
+        chosen_all.append(rng.choice(pool, size=take, replace=False).astype(np.int64))
+
+    seed_idx = np.unique(np.concatenate(chosen_all)) if chosen_all else np.zeros((0,), dtype=np.int64)
+    rand_idx = np.zeros((0,), dtype=np.int64)
+    offline_idx = seed_idx.copy()
+    online_idx = np.setdiff1d(np.arange(N, dtype=np.int64), offline_idx, assume_unique=False).astype(np.int64)
+    return seed_idx, rand_idx, offline_idx, online_idx
+
+
 def build_offline_partition_per_model_unique(
     util_train: np.ndarray,
     per_model: int,
@@ -209,6 +236,51 @@ def build_offline_partition_per_model_unique(
     offline_idx = np.asarray(offline, dtype=np.int64)
     online_idx = np.setdiff1d(np.arange(N, dtype=np.int64), offline_idx, assume_unique=False).astype(np.int64)
     return offline_idx, online_idx
+
+
+def build_offline_partition_mincover_then_random(
+    util_train: np.ndarray, ratio: float, min_per: int, tie_eps: float, seed: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    U = np.asarray(util_train, dtype=np.float32)
+    N, K = U.shape
+    rng = np.random.RandomState(int(seed) + 999)
+
+    n_off = int(round(float(ratio) * N))
+    n_off = max(1, n_off)
+    n_off = min(N, n_off)
+
+    mx = U.max(axis=1, keepdims=True)
+    is_top = (U >= (mx - float(tie_eps)))
+    tie_size = is_top.sum(axis=1)
+    strict_idx = np.where(tie_size == 1)[0].astype(np.int64)
+    winners = np.argmax(U, axis=1).astype(np.int64)
+
+    seed_list = []
+    if int(min_per) > 0:
+        for k in range(K):
+            pool = strict_idx[winners[strict_idx] == k]
+            if pool.size == 0:
+                continue
+            take = min(int(min_per), int(pool.size))
+            seed_list.append(rng.choice(pool, size=take, replace=False).astype(np.int64))
+
+    seed_idx = np.unique(np.concatenate(seed_list)) if seed_list else np.zeros((0,), dtype=np.int64)
+
+    all_idx = np.arange(N, dtype=np.int64)
+    remain = np.setdiff1d(all_idx, seed_idx, assume_unique=False).astype(np.int64)
+
+    n_rand = int(n_off - seed_idx.size)
+    if n_rand > 0 and remain.size > 0:
+        take = min(n_rand, int(remain.size))
+        rand_idx = rng.choice(remain, size=take, replace=False).astype(np.int64)
+    else:
+        rand_idx = np.zeros((0,), dtype=np.int64)
+
+    offline_idx = np.concatenate([seed_idx, rand_idx]).astype(np.int64)
+    offline_idx = rng.permutation(offline_idx).astype(np.int64)
+
+    online_idx = np.setdiff1d(all_idx, offline_idx, assume_unique=False).astype(np.int64)
+    return seed_idx, rand_idx, offline_idx, online_idx
 
 
 def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: int) -> MNLRouter:
@@ -352,6 +424,15 @@ def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optio
     plt.close(fig)
 
 
+def _safe_npy_load(path: Path, allow_pickle: bool, mmap: bool):
+    if mmap:
+        try:
+            return np.load(path, allow_pickle=allow_pickle, mmap_mode="r")
+        except ValueError:
+            return np.load(path, allow_pickle=allow_pickle)
+    return np.load(path, allow_pickle=allow_pickle)
+
+
 def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], args: argparse.Namespace, config: QueueConfig):
     _apply_common_overrides(config, args)
     config.explore_enabled = True
@@ -407,10 +488,10 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         cd.mkdir(parents=True, exist_ok=True)
         _maybe_build_cache(cd, data_path)
 
-        X_all = np.load(cd / "X.npy", mmap_mode="r")
-        acc_all = np.load(cd / "acc.npy", mmap_mode="r")
-        orig_row_all = np.load(cd / "orig_row.npy", mmap_mode="r")
-        sample_id_all = np.load(cd / "sample_id.npy", allow_pickle=True, mmap_mode="r")
+        X_all = _safe_npy_load(cd / "X.npy", allow_pickle=False, mmap=True)
+        acc_all = _safe_npy_load(cd / "acc.npy", allow_pickle=False, mmap=True)
+        orig_row_all = _safe_npy_load(cd / "orig_row.npy", allow_pickle=False, mmap=True)
+        sample_id_all = _safe_npy_load(cd / "sample_id.npy", allow_pickle=True, mmap=True)
         models_cached = json.loads((cd / "models.json").read_text(encoding="utf-8"))
 
         models = sorted(list(models_cached))
@@ -418,12 +499,11 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         config.n_models = int(len(models))
 
         if use_cost and (cd / "cost.npy").exists():
-            cost_all = np.load(cd / "cost.npy", mmap_mode="r")
+            cost_all = _safe_npy_load(cd / "cost.npy", allow_pickle=False, mmap=True)
         else:
             cost_all = None
 
         N_all = int(acc_all.shape[0])
-
         rng_split = int(getattr(config, "seed", 0))
         all_idx = np.arange(N_all, dtype=np.int64)
 
@@ -531,6 +611,7 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
                 stream_local = np.asarray(offline_local, dtype=np.int64)
             else:
                 stream_local = np.asarray(online_local, dtype=np.int64)
+
             print(f"[Split] N_train={N} job_pool={int(len(online_local))} remain={int(len(remain_local))} offline={int(len(offline_local))} stream={int(len(stream_local))} mode={mode} b_type={b_type}")
 
             offline_global = tr_idx[np.asarray(offline_local, dtype=np.int64)] if int(len(offline_local)) > 0 else np.zeros((0,), dtype=np.int64)
@@ -631,7 +712,6 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
     _ensure_prompt_column(df)
 
     models = sorted(list(models))
-
     df2 = _dropna_required(df, models, cost_map, use_cost)
 
     df_train, _ = train_test_split(
@@ -833,4 +913,3 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         run_plotting(output_dir, lambdas)
     except Exception as e:
         print(f"[Error] Failed to generate plots: {e}")
-
