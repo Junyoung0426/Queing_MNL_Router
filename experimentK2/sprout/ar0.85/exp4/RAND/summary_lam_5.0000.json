@@ -3,11 +3,11 @@
   "lam_cost": 5.0,
   "avg_regret": 0.0935332029706667,
   "final_Q_gap": 5.0,
-  "target_explore_rate": 0.01,
-  "alpha_coef": 0.0001,
-  "c1": 0.4232,
-  "mean_explore_rate": 0.01,
-  "cqb_tau": 1,
+  "target_explore_rate": 0.05,
+  "alpha_coef": 0.001,
+  "c1": 2.1219,
+  "mean_explore_rate": 0.05,
+  "cqb_tau": 4,
   "explore_rate": 1.0,
   "arrival rate": 0.85,
   "dep_router_mean": 0.8938949704170227,
@@ -16,6 +16,6 @@
   "online_total": 1000,
   "use_offline_stream": false,
   "b_type": "none",
-  "elapsed_seconds": 0.1683967113494873,
-  "elapsed_minutes": 0.0028066118558247883
+  "elapsed_seconds": 0.1754910945892334,
+  "elapsed_minutes": 0.0029248515764872234
 }
