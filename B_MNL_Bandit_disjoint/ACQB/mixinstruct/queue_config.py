@@ -64,7 +64,7 @@ def _first_t_eta_lt_1(c1: float) -> int:
 @dataclass
 class QueueConfig:
     seed: int = 42
-    log_every: int = 100
+    log_every: int = 500
     debug_verbose: bool = True
     debug_topk: int = 3
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -102,51 +102,84 @@ class QueueConfig:
 
     hist_init_capacity: int = 2048
 
+    # --- Offline Partition ---
     offline_total_ratio: float = 0.10
     offline_tie_eps: float = 1e-9
     offline_seed_min_per_model: int = 10
 
-    d_proj: int = 64
-    b_type: str = "none"
+    # --- B (Router) Config ---
+    _d_proj: int = -1  
+    b_type: str = "none"         
     b_hidden_mult: int = 2
+    normalize_z: bool = True
+    dropout_rate: float = 0.2
+    noise_level: float = 0.05 
 
-    supcon_temp: float = 0.07
-    supcon_bs: int = 512
+    # --- Common SupCon Params ---
     offline_epochs: int = 10_000
     offline_lr_B: float = 3e-4
+    supcon_bs: int = 512
+    supcon_temp: float = 0.07
     supcon_grad_clip: float = 1.0
+    supcon_weight_decay: float = 1e-4
+    offline_per_model: int = 5
+    # --- Strategy Specific Params ---
+    # 1) Tie & Balancing (b_contrastive_util_multipos)
+    supcon_exact_tie: bool = False  # True면 tie_eps 무시하고 완전 동일만 Tie
+    supcon_tie_eps: float = 1e-4
+    balance_min_classes: int = 8
+    balance_per_class: int = 64
 
-    supcon_pos_strategy: str = "topr_mass"
+    # 2) Utility Top-K (b_contrastive_util_topk)
+    supcon_pos_k: int = 8
+    supcon_neg_k: int = 64
+    supcon_alpha: float = 0.2  # Softmax scaling inside loss
+
+    # 3) KMeans Pseudo (b_contrastive_kmeans_pseudo)
+    supcon_kmeans_k: int = 64
+    supcon_kmeans_refresh: int = 200
+    supcon_kmeans_mb: int = 4096
+
+    # 4) Distillation (b_contrastive_util_topk_distill)
+    supcon_tau: float = 0.5          # Teacher softmax temp
+    supcon_beta_distill: float = 2.0 # Distillation weight
+    supcon_gamma_contrast: float = 1.0 # Contrastive weight
+
+    supcon_pos_strategy: str = "unused"
     supcon_topk_max_k: int = 100
     supcon_topk_q: float = 1
     supcon_topk_beta: float = 5.0
     supcon_topk_delta: float = 1.0
 
-    balance_min_classes: int = 8
-    balance_per_class: int = 64
+    @property
+    def d_proj(self) -> int:
+        if self._d_proj == -1:
+            if self.d_ctx is not None: return self.d_ctx
+            return 128 
+        return self._d_proj
+
+    @d_proj.setter
+    def d_proj(self, value: int):
+        self._d_proj = value
 
     @property
     def c1(self) -> float:
-        if not self.explore_enabled:
-            return 0.0
+        if not self.explore_enabled: return 0.0
         v = _solve_c1(self.target_explore_rate, self.arrival_rate, self.max_steps)
         return round(float(v), 4)
 
     @property
     def mean_explore_rate(self) -> float:
-        if not self.explore_enabled:
-            return 0.0
+        if not self.explore_enabled: return 0.0
         T = int(self.max_steps)
         a = float(self.arrival_rate)
-        v = a * _eta_mean(float(self.c1), T)  
+        v = a * _eta_mean(float(self.c1), T)
         return round(float(v), 4)
 
     @property
     def cqb_tau(self) -> int:
-        if not self.explore_enabled:
-            return 1
+        if not self.explore_enabled: return 1
         T = int(self.max_steps)
         tau = _first_t_eta_lt_1(float(self.c1))
-        if tau > T:
-            tau = T
+        if tau > T: tau = T
         return tau

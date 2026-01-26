@@ -1,4 +1,3 @@
-# queue_config.py
 from dataclasses import dataclass
 from typing import Optional
 import math
@@ -20,7 +19,6 @@ def _eta_mean(c1: float, T: int) -> float:
 def _solve_c1(target_explore_rate: float, arrival_rate: float, max_steps: int) -> float:
     a = float(arrival_rate)
     T = int(max_steps)
-
     if T <= 0 or a <= 0.0:
         return 0.0
 
@@ -54,9 +52,6 @@ def _first_t_eta_lt_1(c1: float) -> int:
     c1 = float(c1)
     if c1 <= 0.0:
         return 1
-    # eta(t)=min(1, c1/sqrt(t+1))
-    # eta(t) < 1  <=>  c1/sqrt(t+1) < 1  <=>  t+1 > c1^2  <=>  t > c1^2 - 1
-    # first integer t satisfying: t >= floor(c1^2)
     tau = int(math.floor(c1 * c1))
     return 1 if tau < 1 else tau
 
@@ -64,7 +59,7 @@ def _first_t_eta_lt_1(c1: float) -> int:
 @dataclass
 class QueueConfig:
     seed: int = 42
-    log_every: int = 100
+    log_every: int = 500
     debug_verbose: bool = True
     debug_topk: int = 3
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -102,28 +97,67 @@ class QueueConfig:
 
     hist_init_capacity: int = 2048
 
+    offline_partition_mode: str = "util" # "random"
     offline_total_ratio: float = 0.10
     offline_tie_eps: float = 1e-9
     offline_seed_min_per_model: int = 10
+    offline_per_model: int = 5
 
-    d_proj: int = 64
+    offline_epochs: int = 10
+    supcon_bs: int = 128
+    offline_lr_B: float = 3e-4
+
+    _d_proj: int = -1
     b_type: str = "none"
     b_hidden_mult: int = 2
+    normalize_z: bool = True
+    dropout_rate: float = 0.0
+    noise_level: float = 0.05
 
-    supcon_temp: float = 0.07
-    supcon_bs: int = 512
-    offline_epochs: int = 10_000
-    offline_lr_B: float = 3e-4
+    supcon_temp: float = 0.10
     supcon_grad_clip: float = 1.0
+    supcon_weight_decay: float = 1e-4
 
-    supcon_pos_strategy: str = "topr_mass"
+    supcon_pos_strategy: str = "top1"
     supcon_topk_max_k: int = 100
-    supcon_topk_q: float = 1
+    supcon_topk_q: float = 1.0
     supcon_topk_beta: float = 5.0
     supcon_topk_delta: float = 1.0
 
+    supcon_tie_eps: float = 1e-4
     balance_min_classes: int = 8
-    balance_per_class: int = 64
+    balance_per_class: int = 0
+
+    supcon_pos_k: int = 8
+    supcon_neg_k: int = 64
+    supcon_alpha: float = 0.2
+
+    supcon_uc_tau_pos: float = 0.7
+    supcon_uc_tau_neg: float = 0.0
+    supcon_uc_mean_center: bool = True
+    supcon_uc_pos_cap: int = 16
+    supcon_uc_require_neg: bool = True
+
+    supcon_sem_topk: int = 8
+    supcon_sem_thresh: float = 0.65
+    supcon_sem_hash_bits: int = 16
+    supcon_pos_cap: int = 64
+
+    supcon_kmeans_k: int = 64
+    supcon_kmeans_mb: int = 4096
+    supcon_kmeans_embed_bs: int = 2048
+
+    @property
+    def d_proj(self) -> int:
+        if self._d_proj == -1:
+            if self.d_ctx is not None:
+                return int(self.d_ctx)
+            return 128
+        return int(self._d_proj)
+
+    @d_proj.setter
+    def d_proj(self, value: int):
+        self._d_proj = int(value)
 
     @property
     def c1(self) -> float:
@@ -138,7 +172,7 @@ class QueueConfig:
             return 0.0
         T = int(self.max_steps)
         a = float(self.arrival_rate)
-        v = a * _eta_mean(float(self.c1), T)   
+        v = a * _eta_mean(float(self.c1), T)
         return round(float(v), 4)
 
     @property
@@ -149,4 +183,4 @@ class QueueConfig:
         tau = _first_t_eta_lt_1(float(self.c1))
         if tau > T:
             tau = T
-        return tau
+        return int(tau)

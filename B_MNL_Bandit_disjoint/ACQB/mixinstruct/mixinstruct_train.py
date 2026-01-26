@@ -3,6 +3,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import numpy as np
 
 import sys
 import argparse
@@ -53,10 +54,11 @@ from queue_config import QueueConfig
 
 
 def infer_models_and_cost_map(df: pd.DataFrame) -> Tuple[List[str], Dict[str, str]]:
-    base = {"sample_id", "prompt", "eval_name", "oracle_model_to_route_to", "oracle_model"}
+    base = {"orig_row", "sample_id", "prompt", "eval_name", "oracle_model_to_route_to", "oracle_model"}
     models = [c for c in df.columns if ("|" not in c) and (c not in base)]
     cost_map = {c.split("|")[0]: c for c in df.columns if str(c).endswith("|total_cost")}
     return models, cost_map
+
 
 
 def load_routerbench_like_csv(
@@ -65,7 +67,8 @@ def load_routerbench_like_csv(
     models_fixed: Optional[List[str]] = None,
 ) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
     df = pd.read_csv(path)
-
+    if "orig_row" not in df.columns:
+        df["orig_row"] = np.arange(len(df), dtype=np.int64)
     if "prompt" not in df.columns:
         raise ValueError("df에 'prompt' 컬럼이 필요하다")
 
@@ -88,7 +91,7 @@ def load_routerbench_like_csv(
         cost_map = {}
 
     keep = []
-    for c in ["sample_id", "prompt", "eval_name"]:
+    for c in ["orig_row","sample_id", "prompt", "eval_name"]:
         if c in df.columns:
             keep.append(c)
 

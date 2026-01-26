@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 import importlib.util
 import shlex
+import json
 
 
 def _exists(p: Path) -> bool:
@@ -58,7 +59,6 @@ def _get_cfg(BASE_DIR: Path, dataset: str):
             cfg = _load_queue_config_instance(fallback)
             if cfg is not None:
                 return cfg
-
     return None
 
 
@@ -132,14 +132,46 @@ def _is_done(output_dir: Path, lam_list: list[float]) -> bool:
     return True
 
 
+def _ensure_cache(cache_dir: Path, data_csv: Path, embedder_model: str, device: str, use_cost: bool, dry_run: bool):
+    need = [cache_dir / "X.npy", cache_dir / "acc.npy", cache_dir / "orig_row.npy", cache_dir / "sample_id.npy", cache_dir / "models.json", cache_dir / "meta.json"]
+    if all(p.exists() for p in need):
+        return
+
+    script = (Path(__file__).resolve().parent.parent / "tools" / "build_dataset_cache.py").resolve()
+    if not script.exists():
+        raise RuntimeError(f"cache builder not found: {script}")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable,
+        str(script),
+        "--data",
+        str(data_csv.resolve()),
+        "--cache_dir",
+        str(cache_dir.resolve()),
+        "--embedder_model",
+        str(embedder_model),
+        "--device",
+        str(device),
+    ]
+    if use_cost:
+        cmd.append("--use_cost")
+
+    print("CMD:", " ".join(cmd))
+    if dry_run:
+        return
+    subprocess.run(cmd, check=True)
+
+
 def main():
     BASE_DIR = Path(__file__).resolve().parent
     DEFAULT_DATA_DIR = (BASE_DIR.parent / "Data").resolve()
 
     parser = argparse.ArgumentParser(description="Run training sequentially (routerbench/sprout/embedllm).")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("save_path", type=str, help="Root output directory (e.g., ./result)")
-    parser.add_argument("--run", type=int, required=True, help="Run index (e.g., 1,2,3...)")
+    parser.add_argument("save_path", type=str)
+    parser.add_argument("--run", type=int, required=True)
 
     parser.add_argument(
         "--datasets",
@@ -162,13 +194,18 @@ def main():
         type=str,
         nargs="+",
         default=None,
-        help="Algorithms to run by output_name (e.g., ACQB, CQB_eps, Q_UCB). If omitted, run all.",
+        help="Algorithms to run by output_name. If omitted, run all.",
     )
 
     parser.add_argument("--extra_args", type=str, default="")
-
     parser.add_argument("--exp_rates", type=float, nargs="+", default=None)
     parser.add_argument("--alpha_coefs", type=float, nargs="+", default=None)
+
+    parser.add_argument("--cache_root", type=str, default=str(DEFAULT_DATA_DIR / "_cache"))
+    parser.add_argument("--cache_embedder_model", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--cache_device", type=str, default="cuda")
+    parser.add_argument("--no_cache_use_cost", action="store_true")
+
 
     args = parser.parse_args()
 
@@ -192,9 +229,9 @@ def main():
     ]
 
     dataset_spec = {
-        "routerbench": {"script": "routerbench_train.py", "dargs": ["--data", args.routerbench_csv]},
-        "sprout": {"script": "sprout_train.py", "dargs": ["--data", args.sprout_csv]},
-        "embedllm": {"script": "embedllm_train.py", "dargs": ["--data", args.embedllm_csv]},
+        "routerbench": {"script": "routerbench_train.py", "dargs": ["--data", args.routerbench_csv], "csv": Path(args.routerbench_csv)},
+        "sprout": {"script": "sprout_train.py", "dargs": ["--data", args.sprout_csv], "csv": Path(args.sprout_csv)},
+        "embedllm": {"script": "embedllm_train.py", "dargs": ["--data", args.embedllm_csv], "csv": Path(args.embedllm_csv)},
     }
 
     common_args = [
@@ -209,28 +246,28 @@ def main():
     if args.algs is not None and len(args.algs) > 0:
         allow_algs = set(args.algs)
 
-    print("BASE_DIR:", str(BASE_DIR))
-    print("SAVE_ROOT:", str(save_root))
-    print("RUN:", args.run, "=>", exp_tag)
-    print("DATASETS:", args.datasets)
-    print("job_pool_size:", args.job_pool_size, "lam_list:", args.lam_list)
-    print("SEARCH:", do_search)
-    if args.exp_rates is not None:
-        print("exp_rates:", args.exp_rates)
-    if args.alpha_coefs is not None:
-        print("alpha_coefs:", args.alpha_coefs)
-    if allow_algs is not None:
-        print("algs:", sorted(list(allow_algs)))
-    if args.extra_args.strip():
-        print("extra_args:", args.extra_args.strip())
-    print()
-
     er_list = [float(x) for x in args.exp_rates] if args.exp_rates is not None else [None]
     alpha_list = [float(x) for x in args.alpha_coefs] if args.alpha_coefs is not None else [None]
 
+    cache_root = Path(args.cache_root).expanduser().resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+
     for ds in args.datasets:
-        script_name = dataset_spec[ds]["script"]
-        ds_args = dataset_spec[ds]["dargs"]
+        spec = dataset_spec[ds]
+        data_csv = spec["csv"].expanduser().resolve()
+        cache_dir = (cache_root / f"{ds}_miniLM").resolve()
+
+        _ensure_cache(
+            cache_dir=cache_dir,
+            data_csv=data_csv,
+            embedder_model=str(args.cache_embedder_model),
+            device=str(args.cache_device),
+            use_cost=not bool(args.no_cache_use_cost),
+            dry_run=bool(args.dry_run),
+        )
+
+        script_name = spec["script"]
+        ds_args = spec["dargs"]
 
         base_seed = _get_base_seed(BASE_DIR, ds)
         auto_seed = base_seed + (int(args.run) - 1)
@@ -281,14 +318,13 @@ def main():
                     else:
                         current_output_dir = (save_root / ds / ar_tag / exp_tag / output_name).resolve()
 
-                    if do_search:
-                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
-                    else:
-                        run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
-
                     current_output_dir.mkdir(parents=True, exist_ok=True)
 
                     if (not args.force) and _is_done(current_output_dir, [float(x) for x in args.lam_list]):
+                        if do_search:
+                            run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
+                        else:
+                            run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
                         print(f"[SKIP DONE] {run_tag} -> {current_output_dir}")
                         continue
 
@@ -298,6 +334,8 @@ def main():
                         *common_args,
                         "--output_dir", str(current_output_dir),
                         *ds_args,
+                        "--cache_dir", str(cache_dir),
+                        "--cache_build",
                     ]
 
                     if not extra_has_seed:
@@ -311,14 +349,13 @@ def main():
                         cmd += ["--target_explore_rate", str(float(er))]
                     if acoef is not None:
                         cmd += ["--alpha_coef", str(float(acoef))]
+                    if args.assort_K is not None:
+                        cmd += ["--assort_K", str(int(args.assort_K))]
 
                     if do_search:
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}/{er_tag}/{a_tag}"
                     else:
                         run_tag = f"{ds}/{ar_tag}/{exp_tag}/{output_name}"
-
-                    if args.assort_K is not None:
-                        cmd += ["--assort_K", str(int(args.assort_K))]
 
                     print(f"\n--- Running: {run_tag} ---")
                     try:

@@ -581,83 +581,100 @@ class QueueEnv:
 
         # -----------------------------
         # Logging
-        # -----------------------------
+        # # -----------------------------
         if (self.steps % self.config.log_every == 0):
             avg_reg = self.cum_regret / self.steps
             q_diff = self.Q_regret_history[-1]
             T_hist = max(getattr(self.router, "_T", 1), 1)
-            print("\n  ==================== DEBUG START ====================")
-            msg = (
+
+            if not hasattr(self, "_debug_started"):
+                print("\n  ==================== DEBUG START ====================")
+                self._debug_started = True
+
+            print(
                 f"[Queue-Env step={self.steps}] "
                 f"regret(avg)={avg_reg:.6f}  "
                 f"Q-gap={q_diff:.3f}  "
                 f"Q_r={Q_r} Q_o={Q_o}  "
                 f"L_mnl(avg)={(loss_mnl_curr / T_hist):.4f}"
             )
-            print(msg)
-
-        # -----------------------------
-        # Debug Output
-        # -----------------------------
-        if self.debug_verbose and (self.steps % self.debug_print_every == 0):
-
-            def _print_pred_topk(metrics: dict):
-                print(f"  [Router] top{self.debug_topk} models by PRED r:")
-                for mi, mn, mr in zip(
-                    metrics.get("topk_pred", []),
-                    metrics.get("topk_pred_names", []),
-                    metrics.get("topk_pred_vals", []),
-                ):
-                    print(f"    - {int(mi):2d} {mn}  pred_r={float(mr):.6f}")
-
-            def _print_true_topk(ctx_idx: int, topk_idx, topk_names, topk_vals, header: str):
-                print(f"  [{header}] top{self.debug_topk} models by TRUE r:")
-                for mi, mn, tr in zip(topk_idx, topk_names, topk_vals):
-                    mi = int(mi)
-                    acc = float(self.acc_mat[ctx_idx, mi])
-                    util = float(self.util_mat[ctx_idx, mi])
-                    u01 = (util - self.u_min) / self.u_den
-                    r = float(tr)
-                    odds = float(self.odds_mat[ctx_idx, mi])
-                    cost_implied = (acc - util) / self.lambda_0 if self.lambda_0 != 0 else float("nan")
-                    print(f"    - {mi:2d} {mn} acc={acc:.6f} util={util:.6f} u01={u01:.6f}")
-                    print(f"      r={r:.6f}  odds={odds:.6f}  cost_imp={cost_implied:.8f}")
-
-            # Router Block
-            if self._last_S_router is not None and self._last_ctx_router is not None:
-                ctx = int(self._last_ctx_router)
-                uid = int(self._last_uid_router) if self._last_uid_router is not None else -1
-                S_alg = list(self._last_S_router)
-                inside_r, chosen_r = self._last_choice_router or (False, None)
-                m = self._last_router_metrics or {}
-
-                print(f"  [Router] uid={uid} {self._ctx_info(ctx)} explore={m.get('explore_used')} alpha={m.get('alpha_t')}")
-                _print_pred_topk(m)
-                _print_true_topk(ctx, m.get("topk_true", []), m.get("topk_true_names", []), m.get("topk_true_vals", []), "Router")
-
-                print(f"  [Router] S_t idx={S_alg} pred_r={[f'{u:.4f}' for u in m.get('pred_r_alg', [])]}")
-                print(f"          true_r={[f'{u:.4f}' for u in m.get('true_r_alg', [])]} dep_true={m.get('dep_alg_true', 0.0):.6f}")
-                status = f"chosen={chosen_r} ({self._name(chosen_r)})" if inside_r else "outside"
-                print(f"  [Sample Router] inside={inside_r} {status}")
-            else:
-                print("  [Router] N/A")
-
-            # Oracle Block
-            om = self._last_oracle_metrics or {}
-            if om.get("ctx_star") is not None:
-                ctx_star = int(om["ctx_star"])
-                S_star = list(om["S_star"])
-                print(f"  [Oracle@queue-max] {self._ctx_info(ctx_star)}")
-                _print_true_topk(ctx_star, om.get("topk_true", []), om.get("topk_true_names", []), om.get("topk_true_vals", []), "Oracle@queue-max")
-                print(f"  [Oracle@queue-max] S* idx={S_star} true_r={[f'{u:.4f}' for u in om.get('true_r_star', [])]} dep_true={om.get('dep_star', 0.0):.6f}")
-
-                dep_alg = float((self._last_router_metrics or {}).get("dep_alg_true", 0.0))
-                print(f"  [Gap] dep_true(S*) - dep_true(S_t) = {(float(om.get('dep_star', 0.0)) - dep_alg):.6f}")
-
-            print(f"  [Regret terms] R_star_t={R_star_t:.6f} R_alg_t={R_alg_t:.6f}")
-            print("  ===================== DEBUG END =====================")
-
         return False
+        # if (self.steps % self.config.log_every == 0):
+        #     avg_reg = self.cum_regret / self.steps
+        #     q_diff = self.Q_regret_history[-1]
+        #     T_hist = max(getattr(self.router, "_T", 1), 1)
+        #     print("\n  ==================== DEBUG START ====================")
+        #     msg = (
+        #         f"[Queue-Env step={self.steps}] "
+        #         f"regret(avg)={avg_reg:.6f}  "
+        #         f"Q-gap={q_diff:.3f}  "
+        #         f"Q_r={Q_r} Q_o={Q_o}  "
+        #         f"L_mnl(avg)={(loss_mnl_curr / T_hist):.4f}"
+        #     )
+        #     print(msg)
+
+        # # -----------------------------
+        # # Debug Output
+        # # -----------------------------
+        # if self.debug_verbose and (self.steps % self.debug_print_every == 0):
+
+        #     def _print_pred_topk(metrics: dict):
+        #         print(f"  [Router] top{self.debug_topk} models by PRED r:")
+        #         for mi, mn, mr in zip(
+        #             metrics.get("topk_pred", []),
+        #             metrics.get("topk_pred_names", []),
+        #             metrics.get("topk_pred_vals", []),
+        #         ):
+        #             print(f"    - {int(mi):2d} {mn}  pred_r={float(mr):.6f}")
+
+        #     def _print_true_topk(ctx_idx: int, topk_idx, topk_names, topk_vals, header: str):
+        #         print(f"  [{header}] top{self.debug_topk} models by TRUE r:")
+        #         for mi, mn, tr in zip(topk_idx, topk_names, topk_vals):
+        #             mi = int(mi)
+        #             acc = float(self.acc_mat[ctx_idx, mi])
+        #             util = float(self.util_mat[ctx_idx, mi])
+        #             u01 = (util - self.u_min) / self.u_den
+        #             r = float(tr)
+        #             odds = float(self.odds_mat[ctx_idx, mi])
+        #             cost_implied = (acc - util) / self.lambda_0 if self.lambda_0 != 0 else float("nan")
+        #             print(f"    - {mi:2d} {mn} acc={acc:.6f} util={util:.6f} u01={u01:.6f}")
+        #             print(f"      r={r:.6f}  odds={odds:.6f}  cost_imp={cost_implied:.8f}")
+
+        #     # Router Block
+        #     if self._last_S_router is not None and self._last_ctx_router is not None:
+        #         ctx = int(self._last_ctx_router)
+        #         uid = int(self._last_uid_router) if self._last_uid_router is not None else -1
+        #         S_alg = list(self._last_S_router)
+        #         inside_r, chosen_r = self._last_choice_router or (False, None)
+        #         m = self._last_router_metrics or {}
+
+        #         print(f"  [Router] uid={uid} {self._ctx_info(ctx)} explore={m.get('explore_used')} alpha={m.get('alpha_t')}")
+        #         _print_pred_topk(m)
+        #         _print_true_topk(ctx, m.get("topk_true", []), m.get("topk_true_names", []), m.get("topk_true_vals", []), "Router")
+
+        #         print(f"  [Router] S_t idx={S_alg} pred_r={[f'{u:.4f}' for u in m.get('pred_r_alg', [])]}")
+        #         print(f"          true_r={[f'{u:.4f}' for u in m.get('true_r_alg', [])]} dep_true={m.get('dep_alg_true', 0.0):.6f}")
+        #         status = f"chosen={chosen_r} ({self._name(chosen_r)})" if inside_r else "outside"
+        #         print(f"  [Sample Router] inside={inside_r} {status}")
+        #     else:
+        #         print("  [Router] N/A")
+
+        #     # Oracle Block
+        #     om = self._last_oracle_metrics or {}
+        #     if om.get("ctx_star") is not None:
+        #         ctx_star = int(om["ctx_star"])
+        #         S_star = list(om["S_star"])
+        #         print(f"  [Oracle@queue-max] {self._ctx_info(ctx_star)}")
+        #         _print_true_topk(ctx_star, om.get("topk_true", []), om.get("topk_true_names", []), om.get("topk_true_vals", []), "Oracle@queue-max")
+        #         print(f"  [Oracle@queue-max] S* idx={S_star} true_r={[f'{u:.4f}' for u in om.get('true_r_star', [])]} dep_true={om.get('dep_star', 0.0):.6f}")
+
+        #         dep_alg = float((self._last_router_metrics or {}).get("dep_alg_true", 0.0))
+        #         print(f"  [Gap] dep_true(S*) - dep_true(S_t) = {(float(om.get('dep_star', 0.0)) - dep_alg):.6f}")
+
+        #     print(f"  [Regret terms] R_star_t={R_star_t:.6f} R_alg_t={R_alg_t:.6f}")
+        #     print("  ===================== DEBUG END =====================")
+
+        # return False
 
     def run(self):
         while self.steps < self.config.max_steps:

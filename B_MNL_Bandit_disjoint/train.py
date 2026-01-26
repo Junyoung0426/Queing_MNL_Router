@@ -1,26 +1,25 @@
 # B_MNL_Bandit_disjoint/train.py
 from __future__ import annotations
-
+import sys
+import subprocess
 import argparse
 import json
 import os
 import random
 import inspect
-import re  # Added for potential regex needs, though train.py usually knows its lambdas
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 import time
+
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from sentence_transformers import SentenceTransformer
 
-# --- [Plotting Libs] ---
 import matplotlib
-matplotlib.use("Agg") # Must be before importing pyplot for server environments
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# -----------------------
 
 from queue_config import QueueConfig
 from mnl_router import MNLRouter
@@ -28,9 +27,6 @@ from queue_env import queue_env
 from b_contrastive import offline_pretrain_B_supcon
 
 
-# ----------------------------
-# Determinism (optional)
-# ----------------------------
 def set_full_determinism(seed: int):
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
@@ -52,9 +48,6 @@ def set_full_determinism(seed: int):
     torch.set_num_interop_threads(1)
 
 
-# ----------------------------
-# JSON helpers
-# ----------------------------
 def _to_jsonable(x: Any) -> Any:
     if x is None or isinstance(x, (bool, int, float, str)):
         return x
@@ -97,14 +90,10 @@ def _cfg_to_dict(cfg: QueueConfig) -> Dict[str, Any]:
     return out
 
 
-
 def _dump_json(path: Path, obj: Any):
     path.write_text(json.dumps(_to_jsonable(obj), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# ----------------------------
-# CLI
-# ----------------------------
 def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--output_dir", type=str, default="./runs_mnl/exp_auto")
     ap.add_argument("--lam_list", type=float, nargs="+", default=None)
@@ -116,15 +105,14 @@ def add_common_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--embedder_model", type=str, default=None)
     ap.add_argument("--b_type", type=str, default=None)
     ap.add_argument("--deterministic", action="store_true")
-
     ap.add_argument("--target_explore_rate", type=float, default=None)
     ap.add_argument("--alpha_coef", type=float, default=None)
     ap.add_argument("--arrival_rate", type=float, default=None)
+    ap.add_argument("--cache_dir", type=str, default=None)
+    ap.add_argument("--cache_build", action="store_true")
+
     return ap
 
-
-
-# B_MNL_Bandit_disjoint/train.py
 
 def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
     if getattr(args, "seed", None) is not None:
@@ -141,18 +129,13 @@ def _apply_common_overrides(cfg: QueueConfig, args: argparse.Namespace):
         cfg.target_explore_rate = float(args.target_explore_rate)
     if getattr(args, "alpha_coef", None) is not None:
         cfg.alpha_coef = float(args.alpha_coef)
-
     if getattr(args, "arrival_rate", None) is not None:
         cfg.arrival_rate = float(args.arrival_rate)
 
 
-
-# ----------------------------
-# Data helpers
-# ----------------------------
 def _ensure_prompt_column(df: pd.DataFrame):
     if "prompt" not in df.columns:
-        raise ValueError("df에 'prompt' 컬럼이 필요하다")
+        raise ValueError("df needs prompt column")
 
 
 def _dropna_required(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], use_cost: bool) -> pd.DataFrame:
@@ -164,7 +147,6 @@ def _dropna_required(df: pd.DataFrame, models: List[str], cost_map: Dict[str, st
     if use_cost:
         need += [cost_map[m] for m in models if (m in cost_map and cost_map[m] in df2.columns)]
     need = list(dict.fromkeys(need))
-
     df2 = df2.dropna(subset=need).reset_index(drop=True)
     return df2
 
@@ -192,85 +174,43 @@ def compute_acc_cost_util_all(
     return acc, util
 
 
-# ----------------------------
-# Partitioning
-# ----------------------------
-def build_offline_partition_strict_only_per_model(
-    util_train: np.ndarray, n_per_model: int, tie_eps: float, seed: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    U = np.asarray(util_train, dtype=np.float32)
-    N, K = U.shape
-    rng = np.random.RandomState(int(seed))
-
-    mx = U.max(axis=1, keepdims=True)
-    is_top = (U >= (mx - float(tie_eps)))
-    tie_size = is_top.sum(axis=1)
-    strict_idx = np.where(tie_size == 1)[0].astype(np.int64)
-    winners = np.argmax(U, axis=1).astype(np.int64)
-
-    chosen_all = []
-    for k in range(K):
-        pool = strict_idx[winners[strict_idx] == k]
-        if pool.size == 0:
-            continue
-        take = min(int(n_per_model), int(pool.size))
-        chosen_all.append(rng.choice(pool, size=take, replace=False).astype(np.int64))
-
-    seed_idx = np.unique(np.concatenate(chosen_all)) if chosen_all else np.zeros((0,), dtype=np.int64)
-    rand_idx = np.zeros((0,), dtype=np.int64)
-    offline_idx = seed_idx.copy()
-    online_idx = np.setdiff1d(np.arange(N, dtype=np.int64), offline_idx, assume_unique=False).astype(np.int64)
-    return seed_idx, rand_idx, offline_idx, online_idx
-
-
-def build_offline_partition_mincover_then_random(
-    util_train: np.ndarray, ratio: float, min_per: int, tie_eps: float, seed: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def build_offline_partition_per_model_unique(
+    util_train: np.ndarray,
+    per_model: int,
+    seed: int,
+    tie_eps: float,
+) -> Tuple[np.ndarray, np.ndarray]:
     U = np.asarray(util_train, dtype=np.float32)
     N, K = U.shape
     rng = np.random.RandomState(int(seed) + 999)
 
-    n_off = int(round(float(ratio) * N))
-    n_off = max(1, n_off)
-    n_off = min(N, n_off)
-
     mx = U.max(axis=1, keepdims=True)
     is_top = (U >= (mx - float(tie_eps)))
-    tie_size = is_top.sum(axis=1)
-    strict_idx = np.where(tie_size == 1)[0].astype(np.int64)
-    winners = np.argmax(U, axis=1).astype(np.int64)
 
-    seed_list = []
-    if int(min_per) > 0:
-        for k in range(K):
-            pool = strict_idx[winners[strict_idx] == k]
-            if pool.size == 0:
+    chosen = set()
+    offline = []
+
+    model_order = rng.permutation(K)
+    for m in model_order:
+        cand = np.where(is_top[:, m])[0]
+        if cand.size == 0:
+            continue
+        rng.shuffle(cand)
+        take = 0
+        for idx in cand:
+            if idx in chosen:
                 continue
-            take = min(int(min_per), int(pool.size))
-            seed_list.append(rng.choice(pool, size=take, replace=False).astype(np.int64))
+            offline.append(int(idx))
+            chosen.add(int(idx))
+            take += 1
+            if take >= int(per_model):
+                break
 
-    seed_idx = np.unique(np.concatenate(seed_list)) if seed_list else np.zeros((0,), dtype=np.int64)
-
-    all_idx = np.arange(N, dtype=np.int64)
-    remain = np.setdiff1d(all_idx, seed_idx, assume_unique=False).astype(np.int64)
-
-    n_rand = int(n_off - seed_idx.size)
-    if n_rand > 0 and remain.size > 0:
-        take = min(n_rand, int(remain.size))
-        rand_idx = rng.choice(remain, size=take, replace=False).astype(np.int64)
-    else:
-        rand_idx = np.zeros((0,), dtype=np.int64)
-
-    offline_idx = np.concatenate([seed_idx, rand_idx]).astype(np.int64)
-    offline_idx = rng.permutation(offline_idx).astype(np.int64)
-
-    online_idx = np.setdiff1d(all_idx, offline_idx, assume_unique=False).astype(np.int64)
-    return seed_idx, rand_idx, offline_idx, online_idx
+    offline_idx = np.asarray(offline, dtype=np.int64)
+    online_idx = np.setdiff1d(np.arange(N, dtype=np.int64), offline_idx, assume_unique=False).astype(np.int64)
+    return offline_idx, online_idx
 
 
-# ----------------------------
-# Router builder
-# ----------------------------
 def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: int) -> MNLRouter:
     sig = inspect.signature(MNLRouter.__init__)
 
@@ -298,11 +238,7 @@ def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: in
     return MNLRouter(**kwargs)
 
 
-# ----------------------------
-# PLOTTING FUNCTION (Integrated with Paper Style)
-# ----------------------------
 def set_paper_style():
-    """Sets matplotlib params for paper-quality plots."""
     plt.rcParams.update({
         "figure.dpi": 120,
         "savefig.dpi": 300,
@@ -332,7 +268,6 @@ def set_paper_style():
 
 
 def _paper_axes(ax):
-    """Applies specific spine and grid styling."""
     ax.set_facecolor("white")
     for side in ["top", "right", "bottom", "left"]:
         ax.spines[side].set_visible(True)
@@ -343,7 +278,6 @@ def _paper_axes(ax):
 
 
 def _read_series(reg_path: Path, q_path: Path, max_steps: Optional[int], qgap_abs: bool):
-    """Reads and truncates regret and queue data series."""
     df_reg = pd.read_csv(reg_path)
     std_reg = df_reg["cum_regret"].to_numpy() if "cum_regret" in df_reg.columns else df_reg.iloc[:, 0].to_numpy()
 
@@ -365,92 +299,59 @@ def _read_series(reg_path: Path, q_path: Path, max_steps: Optional[int], qgap_ab
 
 
 def run_plotting(output_dir: Path, target_lambdas: List[float], max_steps: Optional[int] = None):
-    """
-    Plots Standard Regret and Queue Gap for the given lambdas using paper style.
-    """
-    print(f"\n[Plotting] Generating plots in {output_dir}...")
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     if not target_lambdas:
-        print("[Warn] No lambdas to plot.")
         return
 
     target_lambdas = sorted(target_lambdas)
-    print(f"[Plotting] Target Lambdas: {target_lambdas}")
-    
     set_paper_style()
-    
-    series_lam = {}
 
-    # 1. Load Data
+    series_lam = {}
     for lam in target_lambdas:
         lam_tag = f"{lam:.2f}"
         reg_path = output_dir / f"regret_history_lam_{lam_tag}.csv"
         q_path = output_dir / f"Qregret_history_lam_{lam_tag}.csv"
-
         if not reg_path.exists() or not q_path.exists():
-            print(f"[Warn] Missing files for lambda={lam}, skipping plotting.")
             continue
-        
-        # Read data
         t, std_reg, q_diff, q_cum = _read_series(reg_path, q_path, max_steps, qgap_abs=False)
         series_lam[lam] = {"t": t, "std_reg": std_reg, "q_diff": q_diff, "q_cum": q_cum}
 
     if not series_lam:
-        print("[Error] No valid data loaded for plotting.")
         return
 
-    filename_suffix = ""
-    if max_steps is not None:
-        filename_suffix = f"_{max_steps}"
-
-    # Default figure size from provided script
+    filename_suffix = f"_{max_steps}" if max_steps is not None else ""
     fig_w, fig_h = 5.0, 4.0
 
-    # 2. Standard Regret Plot
     fig = plt.figure(figsize=(fig_w, fig_h))
     ax = fig.gca()
     for lam in sorted(series_lam.keys()):
         d = series_lam[lam]
         ax.plot(d["t"], d["std_reg"], label=rf"$\lambda={lam:.2f}$")
-    
     ax.set_xlabel("t (time)")
     ax.set_ylabel("Cumulative Regret (lower is better)")
     _paper_axes(ax)
     ax.legend(loc="upper left")
     fig.tight_layout()
-    
-    out_std = plots_dir / f"standard_regret_all_lams{filename_suffix}.png"
-    fig.savefig(out_std)
+    fig.savefig(plots_dir / f"standard_regret_all_lams{filename_suffix}.png")
     plt.close(fig)
-    print(f"[Saved] {out_std}")
 
-    # 3. Queue Gap Plot (Q_r - Q_o)
     fig = plt.figure(figsize=(fig_w, fig_h))
     ax = fig.gca()
     for lam in sorted(series_lam.keys()):
         d = series_lam[lam]
         ax.plot(d["t"], d["q_diff"], label=rf"$\lambda={lam:.2f}$")
-        
     ax.axhline(0, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("t (time)")
     ax.set_ylabel(r"$Q_r(t)-Q_o(t)$")
     _paper_axes(ax)
     ax.legend(loc="upper left")
     fig.tight_layout()
-    
-    out_q = plots_dir / f"queue_gap_all_lams{filename_suffix}.png"
-    fig.savefig(out_q)
+    fig.savefig(plots_dir / f"queue_gap_all_lams{filename_suffix}.png")
     plt.close(fig)
-    print(f"[Saved] {out_q}")
-
-    print("[Plotting] All plots generated successfully.\n")
 
 
-# ----------------------------
-# Main pipeline
-# ----------------------------
 def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], args: argparse.Namespace, config: QueueConfig):
     _apply_common_overrides(config, args)
     config.explore_enabled = True
@@ -460,31 +361,287 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
     if bool(getattr(args, "deterministic", False)):
         set_full_determinism(int(getattr(config, "seed", 0)))
 
-    if b_type == "none":
-        print("\n[Auto-Config] b_type='none' -> Offline split off(Pure Online), B pretrain skip")
-        config.offline_total_ratio = 0.0
-        config.offline_seed_min_per_model = 0
-    else:
-        print(f"\n[Auto-Config] b_type='{b_type}' -> Offline split on (ratio={getattr(config, 'offline_total_ratio', None)})")
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    use_cost = bool(getattr(config, "use_cost", True))
+    device = torch.device(str(getattr(config, "device", "cpu")))
+
+    cache_dir = getattr(args, "cache_dir", None)
+    cache_build = bool(getattr(args, "cache_build", False))
+
+    def _cache_ready(cd: Path) -> bool:
+        need = [cd / "X.npy", cd / "acc.npy", cd / "orig_row.npy", cd / "sample_id.npy", cd / "models.json", cd / "meta.json"]
+        return all(p.exists() for p in need)
+
+    def _maybe_build_cache(cd: Path, data_path: Optional[str]):
+        if _cache_ready(cd):
+            return
+        if not cache_build:
+            raise RuntimeError(f"cache missing: {cd}")
+        if data_path is None:
+            raise RuntimeError("cache_build requires --data in caller script")
+        script = (Path(__file__).resolve().parent.parent / "tools" / "build_dataset_cache.py").resolve()
+        if not script.exists():
+            raise RuntimeError(f"cache builder not found: {script}")
+        cmd = [
+            sys.executable,
+            str(script),
+            "--data",
+            str(Path(data_path).resolve()),
+            "--cache_dir",
+            str(cd),
+            "--embedder_model",
+            str(getattr(config, "embedder_model", "sentence-transformers/all-MiniLM-L6-v2")),
+            "--device",
+            str(device),
+        ]
+        if use_cost:
+            cmd.append("--use_cost")
+        subprocess.run(cmd, check=True)
+
+    data_path = getattr(args, "data", None) if hasattr(args, "data") else None
+
+    if cache_dir is not None:
+        cd = Path(cache_dir).expanduser().resolve()
+        cd.mkdir(parents=True, exist_ok=True)
+        _maybe_build_cache(cd, data_path)
+
+        X_all = np.load(cd / "X.npy", mmap_mode="r")
+        acc_all = np.load(cd / "acc.npy", mmap_mode="r")
+        orig_row_all = np.load(cd / "orig_row.npy", mmap_mode="r")
+        sample_id_all = np.load(cd / "sample_id.npy", allow_pickle=True, mmap_mode="r")
+        models_cached = json.loads((cd / "models.json").read_text(encoding="utf-8"))
+
+        models = sorted(list(models_cached))
+        config.d_ctx = int(X_all.shape[1])
+        config.n_models = int(len(models))
+
+        if use_cost and (cd / "cost.npy").exists():
+            cost_all = np.load(cd / "cost.npy", mmap_mode="r")
+        else:
+            cost_all = None
+
+        N_all = int(acc_all.shape[0])
+
+        rng_split = int(getattr(config, "seed", 0))
+        all_idx = np.arange(N_all, dtype=np.int64)
+
+        tr_idx, _ = train_test_split(
+            all_idx,
+            test_size=float(getattr(config, "test_size", 0.2)),
+            random_state=rng_split,
+            shuffle=True,
+        )
+        tr_idx = np.asarray(tr_idx, dtype=np.int64)
+        N = int(tr_idx.size)
+
+        if getattr(args, "lam_list", None) is not None:
+            lambdas = [float(x) for x in args.lam_list]
+        else:
+            lambdas = [float(getattr(config, "lam_cost", 0.0))] if use_cost else [0.0]
+
+        _dump_json(output_dir / "config_full.json", _cfg_to_dict(config))
+        _dump_json(output_dir / "models.json", list(models))
+
+        for lam in lambdas:
+            lam = float(lam)
+            print(f"\n>>> Running lambda={lam:.4f} <<<")
+            start_time = time.time()
+
+            acc_train_full = np.asarray(acc_all[tr_idx], dtype=np.float32)
+            if use_cost and (cost_all is not None):
+                cost_train_full = np.asarray(cost_all[tr_idx], dtype=np.float32)
+            else:
+                cost_train_full = np.zeros_like(acc_train_full, dtype=np.float32)
+
+            util_train_full = acc_train_full - float(lam) * cost_train_full
+
+            mode = str(getattr(config, "offline_partition_mode", "util")).lower().strip()
+            all_local = np.arange(N, dtype=np.int64)
+
+            job_pool_size = getattr(args, "job_pool_size", None)
+            if job_pool_size is not None:
+                seed0 = int(getattr(config, "seed", 0))
+                n_take = min(int(job_pool_size), N)
+                df_tmp = pd.DataFrame(index=np.arange(N, dtype=np.int64))
+                df_pool = df_tmp.sample(n=n_take, random_state=seed0)
+                online_pool_local = df_pool.index.to_numpy(dtype=np.int64)
+            else:
+                online_pool_local = all_local.copy()
+
+            remain_local = np.setdiff1d(all_local, online_pool_local, assume_unique=False).astype(np.int64)
+
+            seed_idx = np.zeros((0,), dtype=np.int64)
+            rand_idx = np.zeros((0,), dtype=np.int64)
+
+            if remain_local.size == 0:
+                offline_local = np.zeros((0,), dtype=np.int64)
+            else:
+                if mode == "random":
+                    rng = np.random.RandomState(int(getattr(config, "seed", 0)) + 999)
+                    ratio = float(getattr(config, "offline_total_ratio", 0.10))
+                    n_off = int(round(ratio * int(remain_local.size)))
+                    n_off = max(1, min(int(remain_local.size), n_off))
+                    perm = rng.permutation(int(remain_local.size)).astype(np.int64)
+                    offline_local = remain_local[perm[:n_off]].astype(np.int64)
+                elif mode == "strict":
+                    n_per_model = int(getattr(config, "offline_per_model", 5))
+                    tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                    s_l, r_l, off_l, _ = build_offline_partition_strict_only_per_model(
+                        util_train=util_train_full[remain_local],
+                        n_per_model=n_per_model,
+                        tie_eps=tie_eps,
+                        seed=int(getattr(config, "seed", 0)),
+                    )
+                    seed_idx = remain_local[np.asarray(s_l, dtype=np.int64)] if int(len(s_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                    rand_idx = remain_local[np.asarray(r_l, dtype=np.int64)] if int(len(r_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                    offline_local = remain_local[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                elif mode == "mincover":
+                    ratio = float(getattr(config, "offline_total_ratio", 0.10))
+                    min_per = int(getattr(config, "offline_seed_min_per_model", 0))
+                    tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                    s_l, r_l, off_l, _ = build_offline_partition_mincover_then_random(
+                        util_train=util_train_full[remain_local],
+                        ratio=ratio,
+                        min_per=min_per,
+                        tie_eps=tie_eps,
+                        seed=int(getattr(config, "seed", 0)),
+                    )
+                    seed_idx = remain_local[np.asarray(s_l, dtype=np.int64)] if int(len(s_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                    rand_idx = remain_local[np.asarray(r_l, dtype=np.int64)] if int(len(r_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                    offline_local = remain_local[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                else:
+                    per_model = int(getattr(config, "offline_per_model", 5))
+                    tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                    if per_model <= 0:
+                        offline_local = np.zeros((0,), dtype=np.int64)
+                    else:
+                        off_l, _ = build_offline_partition_per_model_unique(
+                            util_train=util_train_full[remain_local],
+                            per_model=per_model,
+                            seed=int(getattr(config, "seed", 0)),
+                            tie_eps=tie_eps,
+                        )
+                        offline_local = remain_local[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
+
+            online_local = np.asarray(online_pool_local, dtype=np.int64)
+
+            if bool(getattr(args, "use_offline_stream", False)) and int(len(offline_local)) > 0:
+                stream_local = np.asarray(offline_local, dtype=np.int64)
+            else:
+                stream_local = np.asarray(online_local, dtype=np.int64)
+            print(f"[Split] N_train={N} job_pool={int(len(online_local))} remain={int(len(remain_local))} offline={int(len(offline_local))} stream={int(len(stream_local))} mode={mode} b_type={b_type}")
+
+            offline_global = tr_idx[np.asarray(offline_local, dtype=np.int64)] if int(len(offline_local)) > 0 else np.zeros((0,), dtype=np.int64)
+            online_global = tr_idx[np.asarray(online_local, dtype=np.int64)]
+            stream_global = tr_idx[np.asarray(stream_local, dtype=np.int64)]
+
+            np.savez(
+                output_dir / f"partition_idx_lam_{lam:.4f}.npz",
+                seed_idx=np.asarray(seed_idx, dtype=np.int64),
+                rand_idx=np.asarray(rand_idx, dtype=np.int64),
+                offline_idx=np.asarray(offline_local, dtype=np.int64),
+                online_idx=np.asarray(online_local, dtype=np.int64),
+                stream_idx=np.asarray(stream_local, dtype=np.int64),
+                offline_idx_global=np.asarray(offline_global, dtype=np.int64),
+                online_idx_global=np.asarray(online_global, dtype=np.int64),
+                stream_idx_global=np.asarray(stream_global, dtype=np.int64),
+                train_idx_global=np.asarray(tr_idx, dtype=np.int64),
+            )
+
+            d_ctx = int(getattr(config, "d_ctx", int(X_all.shape[1])))
+            n_models = int(getattr(config, "n_models", len(models)))
+            d_proj_eff = d_ctx if b_type == "none" else int(getattr(config, "d_proj", d_ctx))
+
+            router = _build_router(config=config, d_ctx=d_ctx, n_models=n_models, d_proj_eff=d_proj_eff).to(device)
+
+            if b_type != "none" and int(len(offline_local)) > 0:
+                X_off = np.asarray(X_all[offline_global], dtype=np.float32)
+                U_off = np.asarray(util_train_full[offline_local], dtype=np.float32)
+                print(f"[Offline] Pretraining B (n={int(len(offline_local))})")
+                offline_pretrain_B_supcon(router, X_off, U_off, n_models=n_models, cfg=config)
+            else:
+                print("[Offline] skip B pretrain")
+
+            print(f"[Online] Bandit stream size={int(stream_local.size)}")
+            router.reset_for_online()
+
+            row_ids = np.asarray(orig_row_all[stream_global], dtype=np.int64)
+            sample_ids = np.asarray(sample_id_all[stream_global])
+
+            router, avg_reg, Q_gap, reg_hist, Q_diff, Q_r, Q_o, expl_rate = queue_env(
+                X_ctx=np.asarray(X_all[stream_global], dtype=np.float32),
+                acc_mat=np.asarray(acc_train_full[stream_local], dtype=np.float32),
+                util_mat=np.asarray(util_train_full[stream_local], dtype=np.float32),
+                config=config,
+                router=router,
+                model_names=models,
+                row_ids=row_ids,
+                sample_ids=sample_ids,
+            )
+
+            elapsed_sec = time.time() - start_time
+
+            pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.2f}.csv", index=False)
+            pd.DataFrame({"Q_diff": Q_diff, "Q_router": Q_r, "Q_oracle": Q_o}).to_csv(output_dir / f"Qregret_history_lam_{lam:.2f}.csv", index=False)
+
+            logs = getattr(router, "_queue_env_logs", None)
+            if isinstance(logs, dict):
+                np.savez(output_dir / f"departure_logs_lam_{lam:.4f}.npz", **{k: _to_jsonable(v) for k, v in logs.items()})
+
+            dep_router_mean = float("nan")
+            if isinstance(logs, dict):
+                dep_router_mean = _safe_mean(logs.get("dep_prob_router_hist", []))
+
+            summary = {
+                "seed": int(getattr(config, "seed", 0)),
+                "lam_cost": float(lam),
+                "avg_regret": float(avg_reg),
+                "final_Q_gap": float(Q_gap),
+                "target_explore_rate": float(getattr(config, "target_explore_rate", float("nan"))),
+                "alpha_coef": float(getattr(config, "alpha_coef", float("nan"))),
+                "c1": float(getattr(config, "c1", float("nan"))),
+                "mean_explore_rate": float(getattr(config, "mean_explore_rate", float("nan"))),
+                "cqb_tau": int(getattr(config, "cqb_tau", -1)) if hasattr(config, "cqb_tau") else -1,
+                "explore_rate": float(expl_rate),
+                "arrival rate": float(config.arrival_rate),
+                "dep_router_mean": float(dep_router_mean),
+                "n_stream": int(stream_local.size),
+                "offline_total": int(len(offline_local)),
+                "online_total": int(len(online_local)),
+                "use_offline_stream": bool(getattr(args, "use_offline_stream", False)),
+                "b_type": str(b_type),
+                "offline_partition_mode": str(mode),
+                "cache_dir": str(cd),
+                "elapsed_seconds": float(elapsed_sec),
+                "elapsed_minutes": float(elapsed_sec / 60.0),
+            }
+
+            _dump_json(output_dir / f"summary_lam_{lam:.4f}.json", summary)
+
+            print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f} time={elapsed_sec:.1f}s")
+
+        try:
+            run_plotting(output_dir, lambdas)
+        except Exception as e:
+            print(f"[Error] Failed to generate plots: {e}")
+        return
 
     _ensure_prompt_column(df)
 
     models = sorted(list(models))
 
-    df2 = _dropna_required(df, models, cost_map, bool(getattr(config, "use_cost", True)))
+    df2 = _dropna_required(df, models, cost_map, use_cost)
 
-    df_train, _ = train_test_split(df2, test_size=float(getattr(config, "test_size", 0.2)), random_state=int(getattr(config, "seed", 0)), shuffle=True)
+    df_train, _ = train_test_split(
+        df2,
+        test_size=float(getattr(config, "test_size", 0.2)),
+        random_state=int(getattr(config, "seed", 0)),
+        shuffle=True,
+    )
     df_train = df_train.reset_index(drop=True)
 
-    if getattr(args, "job_pool_size", None) is not None:
-        df_train = df_train.sample(n=int(args.job_pool_size), random_state=int(getattr(config, "seed", 0))).reset_index(drop=True)
-
-    device = torch.device(str(getattr(config, "device", "cpu")))
-
-    # embedder
     embedder = SentenceTransformer(str(getattr(config, "embedder_model", "sentence-transformers/all-MiniLM-L6-v2")), device=str(device))
     X_train = embedder.encode(
         df_train["prompt"].astype(str).tolist(),
@@ -496,16 +653,11 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
     config.d_ctx = int(X_train.shape[1])
     config.n_models = int(len(models))
 
-    # lambda list
     if getattr(args, "lam_list", None) is not None:
         lambdas = [float(x) for x in args.lam_list]
     else:
-        if bool(getattr(config, "use_cost", True)):
-            lambdas = [float(getattr(config, "lam_cost", 0.0))]
-        else:
-            lambdas = [0.0]
+        lambdas = [float(getattr(config, "lam_cost", 0.0))] if use_cost else [0.0]
 
-    # save meta
     _dump_json(output_dir / "config_full.json", _cfg_to_dict(config))
     _dump_json(output_dir / "models.json", list(models))
 
@@ -513,69 +665,116 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
         lam = float(lam)
         print(f"\n>>> Running lambda={lam:.4f} <<<")
         start_time = time.time()
+
         acc_train, util_train = compute_acc_cost_util_all(
-            df_train, models, cost_map,
-            use_cost=bool(getattr(config, "use_cost", True)),
-            lam_cost=lam
+            df_train,
+            models,
+            cost_map,
+            use_cost=use_cost,
+            lam_cost=lam,
         )
 
-        # Partitioning
-        ratio = float(getattr(config, "offline_total_ratio", 0.0))
-        if ratio <= 0.0:
-            seed_idx = np.zeros((0,), dtype=np.int64)
-            rand_idx = np.zeros((0,), dtype=np.int64)
+        mode = str(getattr(config, "offline_partition_mode", "util")).lower().strip()
+        N = int(len(df_train))
+        all_idx = np.arange(N, dtype=np.int64)
+
+        job_pool_size = getattr(args, "job_pool_size", None)
+        if job_pool_size is not None:
+            seed0 = int(getattr(config, "seed", 0))
+            n_take = min(int(job_pool_size), N)
+            df_pool = df_train.sample(n=n_take, random_state=seed0)
+            online_pool_idx = df_pool.index.to_numpy(dtype=np.int64)
+        else:
+            online_pool_idx = all_idx.copy()
+
+        remain_idx = np.setdiff1d(all_idx, online_pool_idx, assume_unique=False).astype(np.int64)
+
+        seed_idx = np.zeros((0,), dtype=np.int64)
+        rand_idx = np.zeros((0,), dtype=np.int64)
+
+        if remain_idx.size == 0:
             offline_idx = np.zeros((0,), dtype=np.int64)
-            online_idx = np.arange(len(df_train), dtype=np.int64)
         else:
-            seed_idx, rand_idx, offline_idx, online_idx = build_offline_partition_mincover_then_random(
-                util_train=util_train,
-                ratio=ratio,
-                min_per=int(getattr(config, "offline_seed_min_per_model", 0)),
-                tie_eps=float(getattr(config, "offline_tie_eps", 0.0)),
-                seed=int(getattr(config, "seed", 0)),
-            )
+            if mode == "random":
+                rng = np.random.RandomState(int(getattr(config, "seed", 0)) + 999)
+                ratio = float(getattr(config, "offline_total_ratio", 0.10))
+                n_off = int(round(ratio * int(remain_idx.size)))
+                n_off = max(1, min(int(remain_idx.size), n_off))
+                perm = rng.permutation(int(remain_idx.size)).astype(np.int64)
+                offline_idx = remain_idx[perm[:n_off]].astype(np.int64)
+            elif mode == "strict":
+                n_per_model = int(getattr(config, "offline_per_model", 5))
+                tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                s_l, r_l, off_l, _ = build_offline_partition_strict_only_per_model(
+                    util_train=util_train[remain_idx],
+                    n_per_model=n_per_model,
+                    tie_eps=tie_eps,
+                    seed=int(getattr(config, "seed", 0)),
+                )
+                seed_idx = remain_idx[np.asarray(s_l, dtype=np.int64)] if int(len(s_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                rand_idx = remain_idx[np.asarray(r_l, dtype=np.int64)] if int(len(r_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                offline_idx = remain_idx[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
+            elif mode == "mincover":
+                ratio = float(getattr(config, "offline_total_ratio", 0.10))
+                min_per = int(getattr(config, "offline_seed_min_per_model", 0))
+                tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                s_l, r_l, off_l, _ = build_offline_partition_mincover_then_random(
+                    util_train=util_train[remain_idx],
+                    ratio=ratio,
+                    min_per=min_per,
+                    tie_eps=tie_eps,
+                    seed=int(getattr(config, "seed", 0)),
+                )
+                seed_idx = remain_idx[np.asarray(s_l, dtype=np.int64)] if int(len(s_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                rand_idx = remain_idx[np.asarray(r_l, dtype=np.int64)] if int(len(r_l)) > 0 else np.zeros((0,), dtype=np.int64)
+                offline_idx = remain_idx[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
+            else:
+                per_model = int(getattr(config, "offline_per_model", 5))
+                tie_eps = float(getattr(config, "offline_tie_eps", 1e-9))
+                if per_model <= 0:
+                    offline_idx = np.zeros((0,), dtype=np.int64)
+                else:
+                    off_l, _ = build_offline_partition_per_model_unique(
+                        util_train=util_train[remain_idx],
+                        per_model=per_model,
+                        seed=int(getattr(config, "seed", 0)),
+                        tie_eps=tie_eps,
+                    )
+                    offline_idx = remain_idx[np.asarray(off_l, dtype=np.int64)] if int(len(off_l)) > 0 else np.zeros((0,), dtype=np.int64)
 
-        print(f"[Partition] offline={len(offline_idx)} online={len(online_idx)}")
+        online_idx = np.asarray(online_pool_idx, dtype=np.int64)
 
-        # stream
-        if bool(getattr(args, "use_offline_stream", False)) and len(offline_idx) > 0:
-            stream_idx = offline_idx
+        if bool(getattr(args, "use_offline_stream", False)) and int(len(offline_idx)) > 0:
+            stream_idx = np.asarray(offline_idx, dtype=np.int64)
         else:
-            stream_idx = online_idx
+            stream_idx = np.asarray(online_idx, dtype=np.int64)
 
-        stream_idx = np.asarray(stream_idx, dtype=np.int64)
-
-        # Save indices
         np.savez(
             output_dir / f"partition_idx_lam_{lam:.4f}.npz",
-            seed_idx=seed_idx,
-            rand_idx=rand_idx,
-            offline_idx=offline_idx,
-            online_idx=online_idx,
-            stream_idx=stream_idx,
+            seed_idx=np.asarray(seed_idx, dtype=np.int64),
+            rand_idx=np.asarray(rand_idx, dtype=np.int64),
+            offline_idx=np.asarray(offline_idx, dtype=np.int64),
+            online_idx=np.asarray(online_idx, dtype=np.int64),
+            stream_idx=np.asarray(stream_idx, dtype=np.int64),
         )
 
-        # Router init
         d_ctx = int(getattr(config, "d_ctx", X_train.shape[1]))
         n_models = int(getattr(config, "n_models", len(models)))
         d_proj_eff = d_ctx if b_type == "none" else int(getattr(config, "d_proj", d_ctx))
 
         router = _build_router(config=config, d_ctx=d_ctx, n_models=n_models, d_proj_eff=d_proj_eff).to(device)
 
-        # Offline Pretrain (B only)
-        if b_type != "none" and len(offline_idx) > 0:
+        if b_type != "none" and int(len(offline_idx)) > 0:
             X_off = X_train[np.asarray(offline_idx, dtype=np.int64)]
             U_off = util_train[np.asarray(offline_idx, dtype=np.int64)]
-            print(f"[Offline] Pretraining B (n={len(offline_idx)})")
+            print(f"[Offline] Pretraining B (n={int(len(offline_idx))})")
             offline_pretrain_B_supcon(router, X_off, U_off, n_models=n_models, cfg=config)
         else:
             print("[Offline] skip B pretrain")
 
-        # Online Bandit
         print(f"[Online] Bandit stream size={int(stream_idx.size)}")
         router.reset_for_online()
 
-        # row/sample id mapping
         row_ids = df_train["orig_row"].to_numpy(dtype=np.int64)[stream_idx] if "orig_row" in df_train.columns else stream_idx.copy()
         sample_ids = df_train["sample_id"].to_numpy()[stream_idx] if "sample_id" in df_train.columns else None
 
@@ -589,10 +788,9 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             row_ids=row_ids,
             sample_ids=sample_ids,
         )
-        end_time = time.time()
-        elapsed_sec = end_time - start_time
 
-        # Logging
+        elapsed_sec = time.time() - start_time
+
         pd.DataFrame({"cum_regret": reg_hist}).to_csv(output_dir / f"regret_history_lam_{lam:.2f}.csv", index=False)
         pd.DataFrame({"Q_diff": Q_diff, "Q_router": Q_r, "Q_oracle": Q_o}).to_csv(output_dir / f"Qregret_history_lam_{lam:.2f}.csv", index=False)
 
@@ -609,14 +807,11 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             "lam_cost": float(lam),
             "avg_regret": float(avg_reg),
             "final_Q_gap": float(Q_gap),
-
             "target_explore_rate": float(getattr(config, "target_explore_rate", float("nan"))),
             "alpha_coef": float(getattr(config, "alpha_coef", float("nan"))),
-
             "c1": float(getattr(config, "c1", float("nan"))),
             "mean_explore_rate": float(getattr(config, "mean_explore_rate", float("nan"))),
             "cqb_tau": int(getattr(config, "cqb_tau", -1)) if hasattr(config, "cqb_tau") else -1,
-
             "explore_rate": float(expl_rate),
             "arrival rate": float(config.arrival_rate),
             "dep_router_mean": float(dep_router_mean),
@@ -625,6 +820,7 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
             "online_total": int(len(online_idx)),
             "use_offline_stream": bool(getattr(args, "use_offline_stream", False)),
             "b_type": str(b_type),
+            "offline_partition_mode": str(mode),
             "elapsed_seconds": float(elapsed_sec),
             "elapsed_minutes": float(elapsed_sec / 60.0),
         }
@@ -633,9 +829,8 @@ def run_pipeline(df: pd.DataFrame, models: List[str], cost_map: Dict[str, str], 
 
         print(f"[Done] lam={lam:.4f} avg_reg={avg_reg:.6f} Q_gap={Q_gap:.3f} dep_mean={dep_router_mean:.6f} time={elapsed_sec:.1f}s")
 
-    # --- [Run Plotting] ---
     try:
         run_plotting(output_dir, lambdas)
     except Exception as e:
         print(f"[Error] Failed to generate plots: {e}")
-    # ----------------------
+
