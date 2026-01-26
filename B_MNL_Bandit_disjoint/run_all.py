@@ -5,6 +5,33 @@ from pathlib import Path
 import importlib.util
 import shlex
 import json
+def _auto_device(requested: str) -> str:
+    s = str(requested).lower().strip()
+    if s in {"auto", ""}:
+        s = "cuda"
+    if s == "cuda":
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            pass
+        try:
+            import torch
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+    if s == "mps":
+        try:
+            import torch
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+    return s
 
 
 def _exists(p: Path) -> bool:
@@ -203,7 +230,7 @@ def main():
 
     parser.add_argument("--cache_root", type=str, default=str(DEFAULT_DATA_DIR / "_cache"))
     parser.add_argument("--cache_embedder_model", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
-    parser.add_argument("--cache_device", type=str, default="cuda")
+    parser.add_argument("--cache_device", type=str, default="auto")
     parser.add_argument("--no_cache_use_cost", action="store_true")
 
 
@@ -261,7 +288,7 @@ def main():
             cache_dir=cache_dir,
             data_csv=data_csv,
             embedder_model=str(args.cache_embedder_model),
-            device=str(args.cache_device),
+            device=_auto_device(args.cache_device),
             use_cost=not bool(args.no_cache_use_cost),
             dry_run=bool(args.dry_run),
         )
