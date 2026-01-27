@@ -11,7 +11,7 @@ def _eta_mean(c1: float, T: int) -> float:
     for t in range(1, T + 1):
         v = float(c1) / math.sqrt(t + 1.0)
         s += 1.0 if v > 1.0 else v
-    return s / float(T)
+    return s / float(T) 
 
 
 def _solve_c1(target_explore_rate: float, arrival_rate: float, max_steps: int) -> float:
@@ -101,7 +101,6 @@ class QueueConfig:
     _d_proj: int = -1
     b_type: str = "mlp"
     b_hidden_mult: int = 2
-    normalize_z: bool = True
     dropout_rate: float = 0.2
     noise_level: float = 0.05
 

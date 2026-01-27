@@ -104,7 +104,7 @@ class QueueConfig:
     _d_proj: int = -1
     b_type: str = "none"
     b_hidden_mult: int = 2
-    normalize_z: bool = True
+    normalize_z: bool = False
     dropout_rate: float = 0.0
     noise_level: float = 0.05
 
@@ -112,8 +112,8 @@ class QueueConfig:
     supcon_grad_clip: float = 1.0
     supcon_weight_decay: float = 1e-4
 
-    supcon_uc_tau_pos: float = 0.7
-    supcon_uc_tau_neg: float = 0.0
+    supcon_uc_tau_pos: float = 0.6
+    supcon_uc_tau_neg: float = 0.3
     supcon_uc_mean_center: bool = True
     supcon_uc_neg_cap: int = 64
     supcon_uc_require_neg: bool = True

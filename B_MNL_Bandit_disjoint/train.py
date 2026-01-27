@@ -72,20 +72,29 @@ def _safe_mean(x) -> float:
 
 
 def _cfg_to_dict(cfg: QueueConfig) -> Dict[str, Any]:
-    out = {}
-    for k, v in vars(cfg).items():
-        if str(k).startswith("_"):
+    out: Dict[str, Any] = {}
+
+    keys = set()
+    try:
+        keys.update(vars(cfg).keys())
+    except Exception:
+        pass
+    keys.update(dir(cfg))
+
+    for k in sorted(keys):
+        if not k or str(k).startswith("_"):
+            continue
+        try:
+            v = getattr(cfg, k)
+        except Exception:
             continue
         if callable(v):
             continue
+        if isinstance(v, type):
+            continue
+        if inspect.ismodule(v):
+            continue
         out[str(k)] = _to_jsonable(v)
-
-    for k in ["c1", "mean_explore_rate", "cqb_tau"]:
-        try:
-            if hasattr(cfg, k):
-                out[k] = _to_jsonable(getattr(cfg, k))
-        except Exception:
-            pass
 
     return out
 
@@ -324,8 +333,6 @@ def _build_router(config: QueueConfig, d_ctx: int, n_models: int, d_proj_eff: in
 
     if "combine_mode" in sig.parameters:
         kwargs["combine_mode"] = "mul"
-    if "normalize_z" in sig.parameters:
-        kwargs["normalize_z"] = bool(getattr(config, "normalize_z", True))
 
     return MNLRouter(**kwargs)
 

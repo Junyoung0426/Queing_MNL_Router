@@ -36,7 +36,6 @@ class MNLRouter(nn.Module):
         lbfgs_line_search: str = "strong_wolfe",
         hist_init_capacity: int = 2048,
         lr_b: float = 1e-3,
-        normalize_z: bool = True,
         # robustness
         dropout_rate: float = 0.2,
         noise_level: float = 0.05,
@@ -102,7 +101,6 @@ class MNLRouter(nn.Module):
         self.lambda_0 = float(lambda_0)
         self.supcon_temp = float(supcon_temp)
         self.lr_b_default = float(lr_b)
-        self.normalize_z = bool(normalize_z)
 
         # L-BFGS config
         self.lbfgs_max_iter = int(lbfgs_max_iter)
@@ -175,9 +173,6 @@ class MNLRouter(nn.Module):
             d = max(1, int(z.shape[-1]))
             noise_std = float(self.noise_level) / math.sqrt(float(d))
             z = z + torch.randn_like(z) * noise_std
-
-        if self.normalize_z:
-            z = F.normalize(z, dim=-1)
         return z
 
     def forward_ctx_supcon(self, x_ctx: torch.Tensor) -> torch.Tensor:
@@ -401,8 +396,7 @@ class MNLRouter(nn.Module):
         y_idx = torch.argmax(y_vec.to(device=self.dev)).long()
 
         z = z.to(device=self.dev, dtype=torch.float32).view(-1)
-        if self.normalize_z:
-            z = F.normalize(z, dim=-1)
+        
 
         # append history
         self._init_history_if_needed(K)

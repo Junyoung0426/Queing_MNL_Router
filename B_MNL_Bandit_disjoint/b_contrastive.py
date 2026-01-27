@@ -38,7 +38,6 @@ def supcon_loss_posmask_with_denmask(
     if B < 2:
         return z.sum() * 0.0
 
-    z = F.normalize(z, dim=1)
     eye = torch.eye(B, device=z.device, dtype=torch.bool)
 
     den = den_mask.to(device=z.device, dtype=torch.bool).masked_fill(eye, False)
