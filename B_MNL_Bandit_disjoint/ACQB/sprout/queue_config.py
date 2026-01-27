@@ -104,7 +104,6 @@ class QueueConfig:
     _d_proj: int = -1
     b_type: str = "none"
     b_hidden_mult: int = 2
-    normalize_z: bool = False
     dropout_rate: float = 0.0
     noise_level: float = 0.05
 
