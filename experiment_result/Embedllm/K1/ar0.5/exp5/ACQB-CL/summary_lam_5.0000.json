@@ -1,0 +1,23 @@
+{
+  "seed": 46,
+  "lam_cost": 5.0,
+  "avg_regret": 0.5490939181012499,
+  "final_Q_gap": 353.0,
+  "target_explore_rate": 0.01,
+  "alpha_coef": 0.0001,
+  "c1": 0.7195,
+  "mean_explore_rate": 0.01,
+  "cqb_tau": 1,
+  "explore_rate": 0.011006603962377426,
+  "arrival rate": 0.5,
+  "dep_router_mean": 0.4404056966304779,
+  "n_stream": 1000,
+  "offline_total": 859,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "mlp",
+  "offline_partition_mode": "util",
+  "cache_dir": "C:\\Users\\sjy99\\Desktop\\Project\\Queing_MNL_Router\\Data\\_cache\\embedllm_miniLM",
+  "elapsed_seconds": 271.11765456199646,
+  "elapsed_minutes": 4.518627576033274
+}
