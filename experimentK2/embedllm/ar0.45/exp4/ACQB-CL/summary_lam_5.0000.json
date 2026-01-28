@@ -1,16 +1,16 @@
 {
   "seed": 45,
   "lam_cost": 5.0,
-  "avg_regret": 0.22366196712770034,
+  "avg_regret": 0.23496646910552507,
   "final_Q_gap": 0.0,
   "target_explore_rate": 0.01,
   "alpha_coef": 0.0001,
   "c1": 0.7995,
   "mean_explore_rate": 0.01,
   "cqb_tau": 1,
-  "explore_rate": 0.01601890756302521,
+  "explore_rate": 0.015549324496558756,
   "arrival rate": 0.45,
-  "dep_router_mean": 0.6006904244422913,
+  "dep_router_mean": 0.5849290490150452,
   "n_stream": 1000,
   "offline_total": 476,
   "online_total": 1000,
@@ -18,6 +18,6 @@
   "b_type": "mlp",
   "offline_partition_mode": "util",
   "cache_dir": "/Users/optalab/Desktop/paper/Queing_MNL_Router/Data/_cache/embedllm_miniLM",
-  "elapsed_seconds": 343.4748468399048,
-  "elapsed_minutes": 5.72458078066508
+  "elapsed_seconds": 384.4915668964386,
+  "elapsed_minutes": 6.40819278160731
 }

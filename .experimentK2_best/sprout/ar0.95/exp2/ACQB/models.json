@@ -1,0 +1,16 @@
+[
+  "aws-claude-3-5-sonnet-v1",
+  "aws-titan-text-premier-v1",
+  "openai-gpt-4o",
+  "openai-gpt-4o-mini",
+  "openai-o3-mini",
+  "wxai-granite-3-2b-instruct-8k-max-tokens",
+  "wxai-granite-3-8b-instruct-8k-max-tokens",
+  "wxai-llama-3-1-70b-instruct",
+  "wxai-llama-3-1-8b-instruct",
+  "wxai-llama-3-2-1b-instruct",
+  "wxai-llama-3-2-3b-instruct",
+  "wxai-llama-3-3-70b-instruct",
+  "wxai-llama-3-405b-instruct",
+  "wxai-mixtral-8x7b-instruct-v01"
+]
