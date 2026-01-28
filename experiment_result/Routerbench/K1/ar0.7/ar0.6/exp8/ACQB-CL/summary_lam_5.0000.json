@@ -1,0 +1,23 @@
+{
+  "seed": 49,
+  "lam_cost": 5.0,
+  "avg_regret": 0.33070271912163013,
+  "final_Q_gap": 5.0,
+  "target_explore_rate": 0.01,
+  "alpha_coef": 0.0001,
+  "c1": 0.5996,
+  "mean_explore_rate": 0.01,
+  "cqb_tau": 1,
+  "explore_rate": 0.009823986901350798,
+  "arrival rate": 0.6,
+  "dep_router_mean": 0.6158366799354553,
+  "n_stream": 1000,
+  "offline_total": 330,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "mlp",
+  "offline_partition_mode": "util",
+  "cache_dir": "/Users/junyoung/Desktop/project/Queing_MNL_Router/Data/_cache/routerbench_miniLM",
+  "elapsed_seconds": 74.33394479751587,
+  "elapsed_minutes": 1.2388990799585977
+}
