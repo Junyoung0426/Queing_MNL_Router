@@ -1,0 +1,23 @@
+{
+  "seed": 49,
+  "lam_cost": 5.0,
+  "avg_regret": 0.23814266604649814,
+  "final_Q_gap": 0.0,
+  "target_explore_rate": 0.01,
+  "alpha_coef": 0.0001,
+  "c1": 0.7195,
+  "mean_explore_rate": 0.01,
+  "cqb_tau": 1,
+  "explore_rate": 0.010346487006737248,
+  "arrival rate": 0.5,
+  "dep_router_mean": 0.6076492071151733,
+  "n_stream": 1000,
+  "offline_total": 55,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "mlp",
+  "offline_partition_mode": "util",
+  "cache_dir": "/home/sjy990426/Desktop/LLM_Router/Queing_MNL_Router/Data/_cache/routerbench_miniLM",
+  "elapsed_seconds": 101.60588765144348,
+  "elapsed_minutes": 1.6934314608573913
+}
