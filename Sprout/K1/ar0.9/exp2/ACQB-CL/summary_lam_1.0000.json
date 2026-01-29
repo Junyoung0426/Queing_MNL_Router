@@ -1,0 +1,23 @@
+{
+  "seed": 43,
+  "lam_cost": 1.0,
+  "avg_regret": 0.12328073609855744,
+  "final_Q_gap": 159.0,
+  "target_explore_rate": 0.05,
+  "alpha_coef": 0.001,
+  "c1": 2.0028,
+  "mean_explore_rate": 0.05,
+  "cqb_tau": 4,
+  "explore_rate": 0.043817527010804325,
+  "arrival rate": 0.9,
+  "dep_router_mean": 0.8657681941986084,
+  "n_stream": 1000,
+  "offline_total": 70,
+  "online_total": 1000,
+  "use_offline_stream": false,
+  "b_type": "mlp",
+  "offline_partition_mode": "util",
+  "cache_dir": "/Users/junyoung/Desktop/project/Queing_MNL_Router/Data/_cache/sprout_miniLM",
+  "elapsed_seconds": 131.94419312477112,
+  "elapsed_minutes": 2.199069885412852
+}
