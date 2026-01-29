@@ -18,6 +18,6 @@
   "b_type": "mlp",
   "offline_partition_mode": "util",
   "cache_dir": "/Users/junyoung/Desktop/project/Queing_MNL_Router/Data/_cache/routerbench_miniLM",
-  "elapsed_seconds": 95.19344115257263,
-  "elapsed_minutes": 1.586557352542877
+  "elapsed_seconds": 93.60000491142273,
+  "elapsed_minutes": 1.5600000818570454
 }
